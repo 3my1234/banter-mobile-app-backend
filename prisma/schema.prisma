@@ -1,0 +1,180 @@
+// Prisma schema for Banter Mobile App Backend
+// Database: PostgreSQL (banter_db)
+// Primary Key Strategy: Privy DID for unified identity across Banter and Rolley
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User model - Primary key is Privy DID for cross-app compatibility
+model User {
+  id              String   @id @default(cuid())
+  privyDid        String   @unique // Privy DID - Primary identifier for cross-app sync
+  privyUserId     String?  @unique // Privy User ID
+  email           String?  @unique // Email (fallback identifier)
+  name            String?
+  avatarUrl       String?  // Profile picture URL
+  bio             String?
+  
+  // Relations
+  wallets         Wallet[]
+  posts           Post[]
+  votes           Vote[]
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([privyDid])
+  @@index([email])
+}
+
+// Wallet model - Supports Movement and Solana
+model Wallet {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  // Wallet identifiers
+  privyWalletId   String?  // Privy wallet ID
+  address         String   // Wallet address
+  blockchain      Blockchain
+  
+  // Wallet metadata
+  type            String?  // e.g., PRIVY_EMBEDDED, PRIVY_EXTERNAL
+  walletClient    String?  // e.g., APTOS_EMBEDDED, SOLANA_EMBEDDED
+  isPrimary       Boolean  @default(false)
+  
+  // Relations
+  walletBalances  WalletBalance[]
+  walletTransactions WalletTransaction[]
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@unique([userId, blockchain, address]) // One wallet per user per blockchain per address
+  @@index([userId])
+  @@index([blockchain])
+  @@index([address])
+}
+
+enum Blockchain {
+  MOVEMENT
+  SOLANA
+}
+
+// Post model - Banter posts with 24-hour expiration
+model Post {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  content         String
+  imageUrl        String?
+  
+  // Voting counts
+  stayVotes       Int      @default(0)
+  dropVotes       Int      @default(0)
+  
+  // Status
+  status          PostStatus @default(ACTIVE)
+  expiresAt       DateTime   // 24 hours from creation
+  hiddenAt        DateTime?  // When post was hidden (dropped)
+  
+  // Relations
+  votes           Vote[]
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([userId])
+  @@index([status])
+  @@index([expiresAt])
+}
+
+enum PostStatus {
+  ACTIVE
+  HIDDEN
+  EXPIRED
+}
+
+// Vote model - Stay/Drop votes on posts
+model Vote {
+  id              String   @id @default(cuid())
+  postId          String
+  post            Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  voteType        VoteType // STAY or DROP
+  
+  createdAt       DateTime @default(now())
+  
+  @@unique([postId, userId]) // One vote per user per post
+  @@index([postId])
+  @@index([userId])
+}
+
+enum VoteType {
+  STAY
+  DROP
+}
+
+// Wallet balance tracking (similar to reference implementation)
+model WalletBalance {
+  id              String   @id @default(cuid())
+  walletId        String
+  wallet          Wallet   @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  
+  // Token details
+  tokenAddress    String   // Token contract address
+  tokenSymbol     String   // e.g., "ROL", "SOL", "USDC"
+  tokenName       String?
+  decimals        Int      @default(8)
+  
+  // Balance
+  balance         String   @default("0") // Stored as string for large numbers
+  balanceUsd     Float?
+  
+  // Metadata
+  lastUpdated     DateTime @default(now())
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@unique([walletId, tokenAddress])
+  @@index([walletId])
+  @@index([tokenAddress])
+  @@index([tokenSymbol])
+}
+
+// Wallet transaction history
+model WalletTransaction {
+  id              String   @id @default(cuid())
+  walletId        String
+  wallet          Wallet   @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  
+  txHash          String   @unique
+  txType          String   // e.g., "TRANSFER", "RECEIVE", "SWAP"
+  amount          String
+  tokenAddress    String
+  tokenSymbol     String
+  fromAddress     String?
+  toAddress       String?
+  status          String   @default("COMPLETED")
+  blockNumber     String?
+  blockTime       DateTime?
+  description     String?
+  metadata        Json?
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([walletId])
+  @@index([txHash])
+  @@index([txType])
+  @@index([blockTime])
+}

@@ -1,0 +1,92 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:15-alpine
+    container_name: banter-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: PHYSICS1234
+      POSTGRES_DB: banter_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d banter_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - banter-network
+
+  # Redis for BullMQ
+  redis:
+    image: redis:7-alpine
+    container_name: banter-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - banter-network
+
+  # Backend API
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: banter-backend
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3001/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    environment:
+      NODE_ENV: production
+      PORT: 3001
+      DOMAIN: ${DOMAIN:-sportbanter.online}
+      API_URL: https://${DOMAIN:-sportbanter.online}
+      FRONTEND_URL: ${FRONTEND_URL}
+      DATABASE_URL: postgresql://postgres:PHYSICS1234@db:5432/banter_db
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      PRIVY_APP_ID: ${PRIVY_APP_ID}
+      PRIVY_APP_SECRET: ${PRIVY_APP_SECRET}
+      AWS_REGION: ${AWS_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME}
+      MOVEMENT_TESTNET_RPC: ${MOVEMENT_TESTNET_RPC}
+      MOVEMENT_INDEXER_URL: ${MOVEMENT_INDEXER_URL}
+      MOVEMENT_USDC_ADDRESS: ${MOVEMENT_USDC_ADDRESS}
+      MOVEMENT_ROL_ADDRESS: ${MOVEMENT_ROL_ADDRESS}
+      SOLANA_RPC_URL: ${SOLANA_RPC_URL}
+      SOLANA_USDC_MINT: ${SOLANA_USDC_MINT}
+    ports:
+      - "3001:3001"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./logs:/app/logs
+    networks:
+      - banter-network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  banter-network:
+    driver: bridge

@@ -1,0 +1,92 @@
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import dotenv from 'dotenv';
+import { createServer } from 'http';
+import { Server } from 'socket.io';
+import { PrismaClient } from '@prisma/client';
+import { logger } from './utils/logger';
+import { errorHandler } from './utils/errorHandler';
+import { privyAuthMiddleware } from './auth/privyAuth';
+import { setupWebSocket } from './websocket/socket';
+import { setupQueueWorkers } from './queue/workers';
+import authRoutes from './auth/routes';
+import walletRoutes from './wallet/routes';
+import postRoutes from './post/routes';
+import voteRoutes from './vote/routes';
+import imageRoutes from './image/routes';
+
+dotenv.config();
+
+const app = express();
+const httpServer = createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: process.env.FRONTEND_URL || process.env.API_URL || '*',
+    methods: ['GET', 'POST'],
+  },
+});
+
+// Initialize Prisma Client
+export const prisma = new PrismaClient({
+  log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
+});
+
+// Middleware
+app.use(helmet());
+app.use(cors({
+  origin: process.env.FRONTEND_URL || process.env.API_URL || '*',
+  credentials: true,
+}));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// Health check
+app.get('/health', (req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// API Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/wallet', privyAuthMiddleware, walletRoutes);
+app.use('/api/posts', privyAuthMiddleware, postRoutes);
+app.use('/api/votes', privyAuthMiddleware, voteRoutes);
+app.use('/api/images', privyAuthMiddleware, imageRoutes);
+
+// Error handling
+app.use(errorHandler);
+
+// Setup WebSocket
+setupWebSocket(io);
+
+// Setup Queue Workers
+setupQueueWorkers();
+
+// Start server
+const PORT = process.env.PORT || 3001;
+
+httpServer.listen(PORT, () => {
+  logger.info(`🚀 Banter Backend Server running on port ${PORT}`);
+  logger.info(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
+  logger.info(`🌐 Domain: ${process.env.DOMAIN || 'localhost'}`);
+  logger.info(`🔗 API URL: ${process.env.API_URL || `http://localhost:${PORT}`}`);
+});
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  logger.info('SIGTERM received, shutting down gracefully...');
+  await prisma.$disconnect();
+  httpServer.close(() => {
+    logger.info('Server closed');
+    process.exit(0);
+  });
+});
+
+process.on('SIGINT', async () => {
+  logger.info('SIGINT received, shutting down gracefully...');
+  await prisma.$disconnect();
+  httpServer.close(() => {
+    logger.info('Server closed');
+    process.exit(0);
+  });
+});
