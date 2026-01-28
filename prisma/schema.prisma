@@ -3,7 +3,8 @@
 // Primary Key Strategy: Privy DID for unified identity across Banter and Rolley
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-1.1.x"]
 }
 
 datasource db {

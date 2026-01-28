@@ -62,7 +62,7 @@ router.get('/balances', async (req: Request, res: Response) => {
     res.json({
       success: true,
       balances,
-      wallets: user.wallets.map((w) => ({
+      wallets: user.wallets.map((w: typeof user.wallets[0]) => ({
         id: w.id,
         address: w.address,
         blockchain: w.blockchain,
