@@ -131,7 +131,7 @@ router.post('/', async (req: Request, res: Response) => {
 
     logger.info(`Vote cast: ${voteType} on post ${postId} by user ${user.id}`);
 
-    res.json({
+    return res.json({
       success: true,
       vote: {
         id: vote.id,
@@ -185,7 +185,7 @@ router.get('/post/:postId', async (req: Request, res: Response) => {
       },
     });
 
-    res.json({
+    return res.json({
       success: true,
       votes: votes.map((vote) => ({
         id: vote.id,
