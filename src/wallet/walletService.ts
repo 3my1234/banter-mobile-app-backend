@@ -1,4 +1,4 @@
-import { PrismaClient, Blockchain } from '@prisma/client';
+import { Blockchain } from '@prisma/client';
 import { logger } from '../utils/logger';
 import { PrivyUser } from '../auth/privyAuth';
 import { prisma } from '../index';

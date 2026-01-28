@@ -53,8 +53,8 @@ router.post('/sync', privyAuthMiddleware, async (req: Request, res: Response) =>
     }
 
     // Ensure wallets exist (idempotent)
-    const movementWallet = await createMovementWallet(user.id, privyUser);
-    const solanaWallet = await createSolanaWallet(user.id, privyUser);
+    await createMovementWallet(user.id, privyUser);
+    await createSolanaWallet(user.id, privyUser);
 
     // Get user with wallets
     const userWithWallets = await prisma.user.findUnique({

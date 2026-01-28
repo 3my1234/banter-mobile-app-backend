@@ -149,9 +149,15 @@ router.post('/', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Vote error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
     }
-    throw new AppError('Failed to cast vote', 500);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to cast vote',
+    });
   }
 });
 
@@ -191,9 +197,15 @@ router.get('/post/:postId', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Get votes error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
     }
-    throw new AppError('Failed to get votes', 500);
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to get votes',
+    });
   }
 });
 

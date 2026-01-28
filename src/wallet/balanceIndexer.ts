@@ -2,11 +2,9 @@ import { prisma } from '../index';
 import { logger } from '../utils/logger';
 import axios from 'axios';
 import { Connection, PublicKey } from '@solana/web3.js';
-import { getAccount } from '@solana/spl-token';
 
 // Movement Network Configuration
 const MOVEMENT_TESTNET_RPC = process.env.MOVEMENT_TESTNET_RPC || 'https://testnet.movementnetwork.xyz/v1';
-const MOVEMENT_INDEXER_URL = process.env.MOVEMENT_INDEXER_URL || 'https://indexer.testnet.movementnetwork.xyz/v1/graphql';
 const MOVEMENT_USDC_ADDRESS = process.env.MOVEMENT_USDC_ADDRESS || '0xb89077cfd2a82a0c1450534d49cfd5f2707643155273069bc23a912bcfefdee7';
 const MOVEMENT_ROL_ADDRESS = process.env.MOVEMENT_ROL_ADDRESS || '';
 

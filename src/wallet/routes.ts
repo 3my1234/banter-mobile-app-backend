@@ -47,7 +47,8 @@ router.get('/balances', async (req: Request, res: Response) => {
         const symbol = balance.tokenSymbol.toUpperCase();
         if (symbol === 'ROL' || symbol === 'SOL' || symbol === 'USDC' || symbol === 'USDC.E') {
           const key = symbol === 'USDC.E' ? 'USDC' : symbol;
-          const existingBalance = parseFloat(balances[key].balance as string) || 0;
+          const existingBalanceData = balances[key] as { balance: string; balanceUsd: number | null; decimals: number };
+          const existingBalance = parseFloat(existingBalanceData.balance) || 0;
           const newBalance = parseFloat(balance.balance) || 0;
           balances[key] = {
             balance: (existingBalance + newBalance).toString(),

@@ -1,11 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { logger } from './logger';
 
-export interface AppError extends Error {
-  statusCode?: number;
-  status?: string;
-}
-
 export const errorHandler = (
   err: AppError,
   req: Request,

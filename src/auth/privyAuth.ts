@@ -31,7 +31,7 @@ declare global {
  */
 export const privyAuthMiddleware = async (
   req: Request,
-  res: Response,
+  _res: Response,
   next: NextFunction
 ) => {
   try {
@@ -44,7 +44,7 @@ export const privyAuthMiddleware = async (
     const token = authHeader.substring(7); // Remove 'Bearer ' prefix
 
     // Verify Privy token
-    const claims = await privyClient.verifyAuthToken(token);
+    const claims = await privyClient.verifyAuthToken(token) as any;
     
     // Extract user information
     const privyUser: PrivyUser = {
