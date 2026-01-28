@@ -16,7 +16,8 @@ const s3Client = new S3Client({
   },
 });
 
-const BUCKET_NAME = process.env.S3_BUCKET_NAME || 'banter-uploads';
+// Accept both S3_BUCKET_NAME and AWS_S3_BUCKET_NAME for compatibility
+const BUCKET_NAME = process.env.S3_BUCKET_NAME || process.env.AWS_S3_BUCKET_NAME || 'banter-uploads';
 
 /**
  * POST /api/images/presign
