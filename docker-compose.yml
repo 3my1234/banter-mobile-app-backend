@@ -10,7 +10,7 @@ services:
       POSTGRES_PASSWORD: PHYSICS1234
       POSTGRES_DB: banter_db
     ports:
-      - "5432:5432"
+      - "5433:5432" # Maps VPS 5433 to Container 5432 (avoids conflict with election project)
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
