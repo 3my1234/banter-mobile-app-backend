@@ -23,8 +23,8 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Install netcat for database readiness check and OpenSSL for Prisma
-RUN apk add --no-cache bash netcat-openbsd openssl1.1-compat
+# Install netcat for database readiness check and OpenSSL for Prisma (Alpine/OpenSSL 3)
+RUN apk add --no-cache bash netcat-openbsd openssl libssl3
 
 # Copy package files
 COPY package*.json ./
