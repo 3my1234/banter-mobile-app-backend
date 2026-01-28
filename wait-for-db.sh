@@ -1,19 +1,24 @@
 #!/bin/sh
-# Wait for database to be ready
 
-set -e
+# usage: ./wait-for-db.sh host:port [-- command args]
 
-host="$1"
-shift
-port="$1"
-shift
+hostport="$1"
+shift # remove host:port from arguments
 
-echo "Waiting for database at $host:$port to be ready..."
+# If the next argument is "--", skip it
+if [ "$1" = "--" ]; then
+  shift
+fi
 
-until nc -z "$host" "$port"; do
+host=$(echo $hostport | cut -d: -f1)
+port=$(echo $hostport | cut -d: -f2)
+
+echo "Waiting for database at $host:$port..."
+
+while ! nc -z "$host" "$port"; do
   echo "Database is unavailable - sleeping"
-  sleep 1
+  sleep 2
 done
 
-echo "Database is ready - executing command"
+echo "Database is up - executing command: $@"
 exec "$@"
