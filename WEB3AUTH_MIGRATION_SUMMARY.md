@@ -22,8 +22,8 @@ The backend has been successfully updated to support the new Web3Auth authentica
   - Added `@@index([username])`
 
 ### 2. Migration Files
-- Created migration: `prisma/migrations/init-web3auth-users/migration.sql`
-- This migration will be applied on the VPS using `npx prisma migrate deploy`
+- Created baseline migration: `prisma/migrations/20260201_init/migration.sql`
+- This migration creates all tables from the current schema and will be applied on the VPS using `prisma migrate deploy`
 
 ### 3. New Authentication Endpoints
 
