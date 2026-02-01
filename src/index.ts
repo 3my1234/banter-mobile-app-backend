@@ -8,6 +8,7 @@ import { PrismaClient } from '@prisma/client';
 import { logger } from './utils/logger';
 import { errorHandler } from './utils/errorHandler';
 import { privyAuthMiddleware } from './auth/privyAuth';
+import { jwtAuthMiddleware } from './auth/jwtMiddleware';
 import { setupWebSocket } from './websocket/socket';
 import { setupQueueWorkers } from './queue/workers';
 import authRoutes from './auth/routes';
@@ -57,10 +58,10 @@ app.get('/api/health', (_req, res) => {
 
 // API Routes
 app.use('/api/auth', authRoutes);
-app.use('/api/wallet', privyAuthMiddleware, walletRoutes);
-app.use('/api/posts', privyAuthMiddleware, postRoutes);
-app.use('/api/votes', privyAuthMiddleware, voteRoutes);
-app.use('/api/images', privyAuthMiddleware, imageRoutes);
+app.use('/api/wallet', jwtAuthMiddleware, walletRoutes);
+app.use('/api/posts', jwtAuthMiddleware, postRoutes);
+app.use('/api/votes', jwtAuthMiddleware, voteRoutes);
+app.use('/api/images', jwtAuthMiddleware, imageRoutes);
 
 // Error handling
 app.use(errorHandler);
