@@ -24,12 +24,12 @@ export interface PrivyUser {
   [key: string]: unknown;
 }
 
-interface PrivyClaims {
-  userId: string;
+type PrivyClaimsPayload = {
+  userId?: string;
   id?: string;
   email?: string;
-  [key: string]: unknown;
-}
+  linkedAccounts?: PrivyLinkedAccount[];
+};
 
 // Extend Express Request to include Privy user (deprecated)
 declare global {
@@ -59,14 +59,19 @@ export const privyAuthMiddleware = async (
     const token = authHeader.substring(7); // Remove 'Bearer ' prefix
 
     // Verify Privy token
-    const claims = await privyClient.verifyAuthToken(token) as PrivyClaims;
-    
+    const claims = await privyClient.verifyAuthToken(token);
+    const claimsPayload = claims as PrivyClaimsPayload;
+
+    if (!claimsPayload.userId) {
+      throw new AppError('Invalid authentication token', 401);
+    }
+
     // Extract user information
     const privyUser: PrivyUser = {
-      userId: claims.userId,
-      id: claims.id || claims.userId, // Privy DID
-      email: claims.email,
-      ...claims,
+      userId: claimsPayload.userId,
+      id: claimsPayload.id || claimsPayload.userId, // Privy DID
+      email: claimsPayload.email,
+      linkedAccounts: claimsPayload.linkedAccounts,
     };
 
     // Attach user to request (deprecated field)
