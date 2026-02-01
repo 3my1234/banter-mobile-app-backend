@@ -12,13 +12,13 @@ const router = Router();
  */
 router.get('/balances', async (req: Request, res: Response) => {
   try {
-    const privyDid = req.privyDid;
-    if (!privyDid) {
+    const userId = req.user?.userId;
+    if (!userId) {
       throw new AppError('User not authenticated', 401);
     }
 
     const user = await prisma.user.findUnique({
-      where: { privyDid },
+      where: { id: userId },
       include: {
         wallets: {
           include: {
@@ -84,15 +84,15 @@ router.get('/balances', async (req: Request, res: Response) => {
  */
 router.post('/sync/:walletId', async (req: Request, res: Response) => {
   try {
-    const privyDid = req.privyDid;
+    const userId = req.user?.userId;
     const walletId = req.params.walletId;
 
-    if (!privyDid) {
+    if (!userId) {
       throw new AppError('User not authenticated', 401);
     }
 
     const user = await prisma.user.findUnique({
-      where: { privyDid },
+      where: { id: userId },
     });
 
     if (!user) {

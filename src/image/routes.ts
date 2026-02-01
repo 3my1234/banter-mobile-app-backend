@@ -25,8 +25,8 @@ const BUCKET_NAME = process.env.S3_BUCKET_NAME || process.env.AWS_S3_BUCKET_NAME
  */
 router.post('/presign', async (req: Request, res: Response) => {
   try {
-    const privyDid = req.privyDid;
-    if (!privyDid) {
+    const userId = req.user?.userId;
+    if (!userId) {
       throw new AppError('User not authenticated', 401);
     }
 
@@ -37,7 +37,7 @@ router.post('/presign', async (req: Request, res: Response) => {
     }
 
     const user = await prisma.user.findUnique({
-      where: { privyDid },
+      where: { id: userId },
     });
 
     if (!user) {
@@ -95,8 +95,8 @@ router.post('/presign', async (req: Request, res: Response) => {
  */
 router.post('/save-profile-picture', async (req: Request, res: Response) => {
   try {
-    const privyDid = req.privyDid;
-    if (!privyDid) {
+    const userId = req.user?.userId;
+    if (!userId) {
       throw new AppError('User not authenticated', 401);
     }
 
@@ -107,7 +107,7 @@ router.post('/save-profile-picture', async (req: Request, res: Response) => {
     }
 
     const user = await prisma.user.findUnique({
-      where: { privyDid },
+      where: { id: userId },
     });
 
     if (!user) {

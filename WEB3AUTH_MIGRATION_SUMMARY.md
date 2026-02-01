@@ -88,6 +88,8 @@ The backend has been successfully updated to support the new Web3Auth authentica
   - Movement address is required
   - Username must be unique (if provided)
   - Addresses must be unique
+- **Side Effects:**
+  - Creates `Wallet` records for Movement and Solana using the provided addresses
 
 ### 4. JWT Authentication System
 
@@ -153,9 +155,8 @@ The frontend (`banter-v3`) should update the `API_BASE_URL` to point to the Cont
 
 ## Backward Compatibility
 
-- Old Privy endpoints (`/api/auth/sync`) are still available but deprecated
-- Old Privy middleware (`privyAuthMiddleware`) is still in the codebase but not used by default
-- These can be removed in a future cleanup if not needed
+- Privy endpoints are removed from routing
+- `privyAuthMiddleware` remains in the codebase but is no longer wired into routes
 
 ## Testing Checklist
 

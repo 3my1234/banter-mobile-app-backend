@@ -7,7 +7,6 @@ import { Server } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
 import { logger } from './utils/logger';
 import { errorHandler } from './utils/errorHandler';
-import { privyAuthMiddleware } from './auth/privyAuth';
 import { jwtAuthMiddleware } from './auth/jwtMiddleware';
 import { setupWebSocket } from './websocket/socket';
 import { setupQueueWorkers } from './queue/workers';

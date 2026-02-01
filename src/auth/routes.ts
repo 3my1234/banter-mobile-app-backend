@@ -1,10 +1,9 @@
 import { Router, Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import { prisma } from '../index';
-import { privyAuthMiddleware, PrivyUser } from './privyAuth';
 import { jwtAuthMiddleware } from './jwtMiddleware';
 import { logger } from '../utils/logger';
 import { AppError } from '../utils/errorHandler';
-import { createMovementWallet, createSolanaWallet } from '../wallet/walletService';
 import { generateToken } from './jwt';
 
 const router = Router();
@@ -109,6 +108,9 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
       throw new AppError('Movement address is required', 400);
     }
 
+    const normalizedSolanaAddress = solanaAddress.trim();
+    const normalizedMovementAddress = movementAddress.trim().toLowerCase();
+
     // Check if user already exists
     const existingUser = await prisma.user.findUnique({
       where: { email },
@@ -131,7 +133,7 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
 
     // Check if addresses are already in use
     const existingSolana = await prisma.user.findUnique({
-      where: { solanaAddress },
+      where: { solanaAddress: normalizedSolanaAddress },
     });
 
     if (existingSolana) {
@@ -139,7 +141,7 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
     }
 
     const existingMovement = await prisma.user.findUnique({
-      where: { movementAddress },
+      where: { movementAddress: normalizedMovementAddress },
     });
 
     if (existingMovement) {
@@ -147,14 +149,39 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
     }
 
     // Create new user
-    const user = await prisma.user.create({
-      data: {
-        email,
-        displayName: displayName || null,
-        username: username || null,
-        solanaAddress,
-        movementAddress,
-      },
+    const user = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      const createdUser = await tx.user.create({
+        data: {
+          email,
+          displayName: displayName || null,
+          username: username || null,
+          solanaAddress: normalizedSolanaAddress,
+          movementAddress: normalizedMovementAddress,
+        },
+      });
+
+      await tx.wallet.createMany({
+        data: [
+          {
+            userId: createdUser.id,
+            address: normalizedMovementAddress,
+            blockchain: 'MOVEMENT',
+            type: 'WEB3AUTH',
+            walletClient: 'MOVEMENT_WEB3AUTH',
+            isPrimary: true,
+          },
+          {
+            userId: createdUser.id,
+            address: normalizedSolanaAddress,
+            blockchain: 'SOLANA',
+            type: 'WEB3AUTH',
+            walletClient: 'SOLANA_WEB3AUTH',
+            isPrimary: false,
+          },
+        ],
+      });
+
+      return createdUser;
     });
 
     logger.info(`Created new user: ${user.id}`);
@@ -175,89 +202,6 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
-/**
- * POST /api/auth/sync
- * Sync user from Privy and ensure wallets exist
- * This is called after user logs in via Privy
- */
-router.post('/sync', privyAuthMiddleware, async (req: Request, res: Response) => {
-  try {
-    const privyUser = req.user as PrivyUser;
-    if (!privyUser || !privyUser.id) {
-      throw new AppError('Invalid user data', 400);
-    }
-
-    const privyDid = privyUser.id;
-    const email = privyUser.email || null;
-
-    logger.info(`Syncing user: ${privyDid}`);
-
-    // Find or create user in database
-    let user = await prisma.user.findUnique({
-      where: { privyDid },
-    });
-
-    if (!user) {
-      // Create new user
-      user = await prisma.user.create({
-        data: {
-          privyDid,
-          privyUserId: privyUser.userId,
-          email,
-          name: privyUser.email?.split('@')[0] || null,
-        },
-      });
-      logger.info(`Created new user: ${user.id}`);
-    } else {
-      // Update last login info
-      await prisma.user.update({
-        where: { id: user.id },
-        data: {
-          privyUserId: privyUser.userId,
-          email: email || user.email,
-          updatedAt: new Date(),
-        },
-      });
-    }
-
-    // Ensure wallets exist (idempotent)
-    await createMovementWallet(user.id, privyUser);
-    await createSolanaWallet(user.id, privyUser);
-
-    // Get user with wallets
-    const userWithWallets = await prisma.user.findUnique({
-      where: { id: user.id },
-      include: {
-        wallets: {
-          include: {
-            walletBalances: {
-              orderBy: { lastUpdated: 'desc' },
-              take: 10, // Latest 10 balances
-            },
-          },
-        },
-      },
-    });
-
-    res.json({
-      success: true,
-      user: {
-        id: userWithWallets?.id,
-        privyDid: userWithWallets?.privyDid,
-        email: userWithWallets?.email,
-        name: userWithWallets?.name,
-        avatarUrl: userWithWallets?.avatarUrl,
-        wallets: userWithWallets?.wallets || [],
-      },
-    });
-  } catch (error) {
-    logger.error('Auth sync error', { error });
-    if (error instanceof AppError) {
-      throw error;
-    }
-    throw new AppError('Failed to sync user', 500);
-  }
-});
 
 /**
  * GET /api/auth/me

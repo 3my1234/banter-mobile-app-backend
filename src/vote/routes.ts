@@ -6,14 +6,31 @@ import { getIO } from '../websocket/socket';
 
 const router = Router();
 
+type VoteRecord = {
+  id: string;
+  postId: string;
+  userId: string;
+  voteType: string;
+  createdAt: Date;
+};
+
+type VoteWithUser = VoteRecord & {
+  user: {
+    id: string;
+    displayName: string | null;
+    username: string | null;
+    avatarUrl: string | null;
+  };
+};
+
 /**
  * POST /api/votes
  * Cast a Stay or Drop vote on a post
  */
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const privyDid = req.privyDid;
-    if (!privyDid) {
+    const userId = req.user?.userId;
+    if (!userId) {
       throw new AppError('User not authenticated', 401);
     }
 
@@ -28,7 +45,7 @@ router.post('/', async (req: Request, res: Response) => {
     }
 
     const user = await prisma.user.findUnique({
-      where: { privyDid },
+      where: { id: userId },
     });
 
     if (!user) {
@@ -62,7 +79,7 @@ router.post('/', async (req: Request, res: Response) => {
       },
     });
 
-    let vote;
+    let vote: VoteRecord;
     let voteCountChange = { stay: 0, drop: 0 };
 
     if (existingVote) {
@@ -175,7 +192,8 @@ router.get('/post/:postId', async (req: Request, res: Response) => {
         user: {
           select: {
             id: true,
-            name: true,
+            displayName: true,
+            username: true,
             avatarUrl: true,
           },
         },
@@ -183,11 +201,11 @@ router.get('/post/:postId', async (req: Request, res: Response) => {
       orderBy: {
         createdAt: 'desc',
       },
-    });
+    }) as VoteWithUser[];
 
     return res.json({
       success: true,
-      votes: votes.map((vote) => ({
+      votes: votes.map((vote: VoteWithUser) => ({
         id: vote.id,
         voteType: vote.voteType,
         createdAt: vote.createdAt,

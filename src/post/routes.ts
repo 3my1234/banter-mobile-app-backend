@@ -12,8 +12,8 @@ const router = Router();
  */
 router.post('/', async (req: Request, res: Response) => {
   try {
-    const privyDid = req.privyDid;
-    if (!privyDid) {
+    const userId = req.user?.userId;
+    if (!userId) {
       throw new AppError('User not authenticated', 401);
     }
 
@@ -24,7 +24,7 @@ router.post('/', async (req: Request, res: Response) => {
     }
 
     const user = await prisma.user.findUnique({
-      where: { privyDid },
+      where: { id: userId },
     });
 
     if (!user) {
@@ -47,9 +47,9 @@ router.post('/', async (req: Request, res: Response) => {
         user: {
           select: {
             id: true,
-            name: true,
+            displayName: true,
+            username: true,
             avatarUrl: true,
-            privyDid: true,
           },
         },
         votes: true,
@@ -105,9 +105,9 @@ router.get('/', async (req: Request, res: Response) => {
         user: {
           select: {
             id: true,
-            name: true,
+            displayName: true,
+            username: true,
             avatarUrl: true,
-            privyDid: true,
           },
         },
         votes: {
@@ -178,9 +178,9 @@ router.get('/:id', async (req: Request, res: Response) => {
         user: {
           select: {
             id: true,
-            name: true,
+            displayName: true,
+            username: true,
             avatarUrl: true,
-            privyDid: true,
           },
         },
         votes: {
@@ -188,7 +188,8 @@ router.get('/:id', async (req: Request, res: Response) => {
             user: {
               select: {
                 id: true,
-                name: true,
+                displayName: true,
+                username: true,
                 avatarUrl: true,
               },
             },
