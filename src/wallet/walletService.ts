@@ -30,8 +30,8 @@ export async function createMovementWallet(
 
     // Find Movement wallet in Privy user's linked accounts
     // Movement wallets are identified by chainType: 'aptos'
-    const movementAccount = (privyUser as any).linkedAccounts?.find(
-      (account: any) => account.type === 'wallet' && account.chainType === 'aptos'
+    const movementAccount = privyUser.linkedAccounts?.find(
+      (account) => account.type === 'wallet' && account.chainType === 'aptos'
     );
 
     if (!movementAccount || !movementAccount.address) {
@@ -90,8 +90,8 @@ export async function createSolanaWallet(
 
     // Find Solana wallet in Privy user's linked accounts
     // Solana wallets are identified by chainType: 'solana'
-    const solanaAccount = (privyUser as any).linkedAccounts?.find(
-      (account: any) => account.type === 'wallet' && account.chainType === 'solana'
+    const solanaAccount = privyUser.linkedAccounts?.find(
+      (account) => account.type === 'wallet' && account.chainType === 'solana'
     );
 
     if (!solanaAccount || !solanaAccount.address) {

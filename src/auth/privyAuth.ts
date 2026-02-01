@@ -9,18 +9,33 @@ const privyClient = new PrivyClient(
   process.env.PRIVY_APP_SECRET || ''
 );
 
+export interface PrivyLinkedAccount {
+  type?: string;
+  chainType?: string;
+  address?: string;
+  id?: string;
+}
+
 export interface PrivyUser {
   userId: string;
   id: string; // Privy DID
   email?: string;
+  linkedAccounts?: PrivyLinkedAccount[];
   [key: string]: unknown;
 }
 
-// Extend Express Request to include user
+interface PrivyClaims {
+  userId: string;
+  id?: string;
+  email?: string;
+  [key: string]: unknown;
+}
+
+// Extend Express Request to include Privy user (deprecated)
 declare global {
   namespace Express {
     interface Request {
-      user?: PrivyUser;
+      privyUser?: PrivyUser;
       privyDid?: string;
     }
   }
@@ -44,7 +59,7 @@ export const privyAuthMiddleware = async (
     const token = authHeader.substring(7); // Remove 'Bearer ' prefix
 
     // Verify Privy token
-    const claims = await privyClient.verifyAuthToken(token) as any;
+    const claims = await privyClient.verifyAuthToken(token) as PrivyClaims;
     
     // Extract user information
     const privyUser: PrivyUser = {
@@ -54,8 +69,8 @@ export const privyAuthMiddleware = async (
       ...claims,
     };
 
-    // Attach user to request
-    req.user = privyUser;
+    // Attach user to request (deprecated field)
+    req.privyUser = privyUser;
     req.privyDid = privyUser.id;
 
     logger.debug(`Authenticated user: ${privyUser.id}`);
