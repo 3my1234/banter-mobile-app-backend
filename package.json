@@ -25,7 +25,7 @@
     "@aptos-labs/ts-sdk": "^1.8.0",
     "@aws-sdk/client-s3": "^3.922.0",
     "@aws-sdk/s3-request-presigner": "^3.922.0",
-    "@prisma/client": "^5.7.0",
+    "@prisma/client": "^5.22.0",
     "@privy-io/server-auth": "^1.0.0",
     "@solana/spl-token": "^0.3.9",
     "@solana/web3.js": "^1.87.6",
@@ -50,7 +50,7 @@
     "@typescript-eslint/parser": "^6.13.0",
     "eslint": "^8.54.0",
     "prettier": "^3.1.0",
-    "prisma": "^5.7.0",
+    "prisma": "^5.22.0",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.3.2"
   }
