@@ -23,11 +23,8 @@ jobs:
             set -euxo pipefail
             APP_PATH="/root/banter-mobile-app-backend"
 
-            if command -v docker-compose >/dev/null 2>&1; then
-              DC="docker-compose"
-            else
-              DC="docker compose"
-            fi
+            DC="docker compose"
+            command -v docker-compose >/dev/null 2>&1 && DC="docker-compose" || true
 
             cd "$APP_PATH"
             git pull origin main
