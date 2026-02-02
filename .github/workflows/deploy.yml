@@ -18,8 +18,9 @@ jobs:
           passphrase: ${{ secrets.VPS_SSH_PASSPHRASE }}
           port: ${{ secrets.VPS_PORT }}
           script_stop: true
+          debug: true
           script: |
-            set -e
+            set -euxo pipefail
             APP_PATH="/root/banter-mobile-app-backend"
 
             if command -v docker-compose >/dev/null 2>&1; then
@@ -31,5 +32,12 @@ jobs:
             cd "$APP_PATH"
             git pull origin main
             $DC up -d --build
-            $DC exec -T app npx prisma migrate deploy
-            curl -f http://localhost:3001/health
+            $DC ps
+            if ! $DC exec -T app npx prisma migrate deploy; then
+              $DC logs --tail=200 app || true
+              exit 1
+            fi
+            if ! curl -f http://localhost:3001/health; then
+              $DC logs --tail=200 app || true
+              exit 1
+            fi
