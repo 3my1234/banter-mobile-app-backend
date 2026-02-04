@@ -175,3 +175,4 @@ The frontend (`banter-v3`) should update the `API_BASE_URL` to point to the Cont
 - Error handling follows the existing `AppError` pattern
 - Logging uses the existing `logger` utility
 - The JWT secret should be changed in production (currently using default)
+

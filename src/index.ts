@@ -15,6 +15,11 @@ import walletRoutes from './wallet/routes';
 import postRoutes from './post/routes';
 import voteRoutes from './vote/routes';
 import imageRoutes from './image/routes';
+import commentRoutes from './comment/routes';
+import reactionRoutes from './reaction/routes';
+import tagRoutes from './tag/routes';
+import leagueRoutes from './league/routes';
+import userRoutes from './user/routes';
 
 dotenv.config();
 
@@ -61,6 +66,11 @@ app.use('/api/wallet', jwtAuthMiddleware, walletRoutes);
 app.use('/api/posts', jwtAuthMiddleware, postRoutes);
 app.use('/api/votes', jwtAuthMiddleware, voteRoutes);
 app.use('/api/images', jwtAuthMiddleware, imageRoutes);
+app.use('/api/comments', jwtAuthMiddleware, commentRoutes);
+app.use('/api/reactions', jwtAuthMiddleware, reactionRoutes);
+app.use('/api/tags', tagRoutes); // Public endpoint
+app.use('/api/leagues', leagueRoutes); // Public endpoint
+app.use('/api/users', jwtAuthMiddleware, userRoutes);
 
 // Error handling
 app.use(errorHandler);

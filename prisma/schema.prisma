@@ -27,6 +27,8 @@ model User {
   wallets         Wallet[]
   posts           Post[]
   votes           Vote[]
+  comments        Comment[]
+  reactions       Reaction[]
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -76,11 +78,18 @@ model Post {
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   
   content         String
-  imageUrl        String?
+  imageUrl        String?  // Deprecated: use mediaUrl instead
+  mediaUrl        String?  // Image or video URL
+  mediaType       String?  // "image" or "video"
+  isRoast         Boolean  @default(false) // Is this a roast post?
   
   // Voting counts
   stayVotes       Int      @default(0)
   dropVotes       Int      @default(0)
+  
+  // Tags and League
+  tags            String[] // Array of club tags / hashtags
+  league          String?  // League name (e.g., "Premier League", "La Liga")
   
   // Status
   status          PostStatus @default(ACTIVE)
@@ -89,6 +98,9 @@ model Post {
   
   // Relations
   votes           Vote[]
+  comments        Comment[]
+  reactions       Reaction[]
+  postTags        PostTag[]
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -96,6 +108,8 @@ model Post {
   @@index([userId])
   @@index([status])
   @@index([expiresAt])
+  @@index([league])
+  @@index([isRoast])
 }
 
 enum PostStatus {
@@ -124,6 +138,104 @@ model Vote {
 enum VoteType {
   STAY
   DROP
+}
+
+// Comment model - Comments on posts
+model Comment {
+  id              String   @id @default(cuid())
+  postId          String
+  post            Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  content         String
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([postId])
+  @@index([userId])
+}
+
+// Reaction model - Reactions on posts (like, love, laugh, etc.)
+model Reaction {
+  id              String   @id @default(cuid())
+  postId          String
+  post            Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  type            ReactionType
+  
+  createdAt       DateTime @default(now())
+  
+  @@unique([postId, userId]) // One reaction per user per post
+  @@index([postId])
+  @@index([userId])
+}
+
+enum ReactionType {
+  LIKE
+  LOVE
+  LAUGH
+  FIRE
+  ANGRY
+  SAD
+}
+
+// Tag model - Club tags / hashtags
+model Tag {
+  id              String   @id @default(cuid())
+  name            String   @unique // Tag name (e.g., "arsenal", "manchester-united")
+  displayName     String   // Display name (e.g., "Arsenal", "Manchester United")
+  type            TagType  @default(CLUB) // CLUB or HASHTAG
+  league          String?  // League this club belongs to
+  iconUrl         String?  // Club logo/icon URL
+  
+  // Relations
+  postTags        PostTag[]
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([name])
+  @@index([type])
+  @@index([league])
+}
+
+enum TagType {
+  CLUB
+  HASHTAG
+}
+
+// PostTag - Many-to-many relationship between Posts and Tags
+model PostTag {
+  id              String   @id @default(cuid())
+  postId          String
+  post            Post     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  tagId           String
+  tag             Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+  
+  createdAt       DateTime @default(now())
+  
+  @@unique([postId, tagId])
+  @@index([postId])
+  @@index([tagId])
+}
+
+// League model - Football leagues
+model League {
+  id              String   @id @default(cuid())
+  name            String   @unique // League name (e.g., "Premier League")
+  displayName     String   // Display name
+  country         String?  // Country (e.g., "England", "Spain")
+  logoUrl         String?  // League logo URL
+  
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  
+  @@index([name])
+  @@index([country])
 }
 
 // Wallet balance tracking (similar to reference implementation)
