@@ -37,7 +37,7 @@ router.get('/search', async (req: Request, res: Response) => {
       take: limit,
     });
 
-    res.json({
+    return res.json({
       success: true,
       tags: tags.map((tag) => ({
         id: tag.id,

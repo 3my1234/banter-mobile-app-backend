@@ -112,7 +112,7 @@ router.post('/', async (req: Request, res: Response) => {
       logger.info(`Created reaction ${type} on post ${postId} by user ${user.id}`);
     }
 
-    res.json({
+    return res.json({
       success: true,
       reaction: {
         id: reaction.id,

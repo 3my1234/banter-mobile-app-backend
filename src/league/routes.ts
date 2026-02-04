@@ -9,17 +9,9 @@ const router = Router();
  * GET /api/leagues
  * Get all leagues and their clubs
  */
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', async (_req: Request, res: Response) => {
   try {
     const leagues = await prisma.league.findMany({
-      include: {
-        _count: {
-          select: {
-            // Count tags (clubs) in this league
-            // Note: This requires a relation from League to Tag, which we'll add if needed
-          },
-        },
-      },
       orderBy: {
         name: 'asc',
       },
