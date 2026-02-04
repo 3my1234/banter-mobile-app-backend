@@ -150,12 +150,13 @@ router.post('/presign', async (req: Request, res: Response) => {
  */
 router.get('/view/*', async (req: Request, res: Response) => {
   try {
-    // Extract key from URL path
-    const fullPath = req.url; // e.g., /api/images/view/user-uploads/123/post/image.jpg
-    const viewPrefix = '/api/images/view/';
-    let key = fullPath.startsWith(viewPrefix)
-      ? fullPath.substring(viewPrefix.length)
-      : fullPath.replace(/^\/api\/images\/view\//, '');
+    // Extract key from wildcard param (preferred)
+    let key = (req.params && (req.params as any)[0]) || '';
+    if (!key && typeof req.url === 'string') {
+      // Fallback if param is missing
+      const fallback = req.url.replace(/^\/view\//, '').replace(/^\/api\/images\/view\//, '');
+      key = fallback;
+    }
 
     // Decode URL encoding
     try {
@@ -165,7 +166,10 @@ router.get('/view/*', async (req: Request, res: Response) => {
     }
 
     // Normalize key (handle legacy comma-separated keys)
-    const normalizedKey = String(key).replace(/^user-uploads[,\/]/, 'user-uploads/').replace(/,/g, '/');
+    const normalizedKey = String(key)
+      .replace(/^\/+/, '')
+      .replace(/^user-uploads[,\/]/, 'user-uploads/')
+      .replace(/,/g, '/');
 
     logger.debug(`Image view request: ${key} -> normalized: ${normalizedKey}`);
 
