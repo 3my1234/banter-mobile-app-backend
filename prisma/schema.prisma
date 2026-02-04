@@ -21,7 +21,12 @@ model User {
   solanaAddress   String?  @unique
   movementAddress String?  @unique
   avatarUrl       String?  // Profile picture URL
+  bannerUrl       String?  // Profile banner URL
   bio             String?
+  phone           String?
+  country         String?
+  dateOfBirth     DateTime?
+  clubs           String[] @default([])
   
   // Relations
   wallets         Wallet[]

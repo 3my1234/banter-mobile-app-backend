@@ -241,7 +241,12 @@ router.get('/me', jwtAuthMiddleware, async (req: Request, res: Response): Promis
         solanaAddress: user.solanaAddress,
         movementAddress: user.movementAddress,
         avatarUrl: user.avatarUrl,
+        bannerUrl: user.bannerUrl,
         bio: user.bio,
+        phone: user.phone,
+        country: user.country,
+        dateOfBirth: user.dateOfBirth,
+        clubs: user.clubs,
         wallets: user.wallets,
       },
     });
@@ -252,6 +257,79 @@ router.get('/me', jwtAuthMiddleware, async (req: Request, res: Response): Promis
       return;
     }
     res.status(500).json({ error: 'Failed to get user' });
+  }
+});
+
+/**
+ * PATCH /api/auth/me
+ * Update current authenticated user profile
+ */
+router.patch('/me', jwtAuthMiddleware, async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('User not authenticated', 401);
+    }
+
+    const {
+      displayName,
+      username,
+      bio,
+      phone,
+      country,
+      dateOfBirth,
+      clubs,
+      avatarUrl,
+      bannerUrl,
+    } = req.body || {};
+
+    if (username) {
+      const existing = await prisma.user.findUnique({ where: { username } });
+      if (existing && existing.id !== userId) {
+        throw new AppError('Username already taken', 409);
+      }
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        displayName: typeof displayName === 'string' ? displayName : undefined,
+        username: typeof username === 'string' ? username : undefined,
+        bio: typeof bio === 'string' ? bio : undefined,
+        phone: typeof phone === 'string' ? phone : undefined,
+        country: typeof country === 'string' ? country : undefined,
+        dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
+        clubs: Array.isArray(clubs) ? clubs : undefined,
+        avatarUrl: typeof avatarUrl === 'string' ? avatarUrl : undefined,
+        bannerUrl: typeof bannerUrl === 'string' ? bannerUrl : undefined,
+      },
+    });
+
+    res.json({
+      success: true,
+      user: {
+        id: updated.id,
+        email: updated.email,
+        displayName: updated.displayName,
+        username: updated.username,
+        solanaAddress: updated.solanaAddress,
+        movementAddress: updated.movementAddress,
+        avatarUrl: updated.avatarUrl,
+        bannerUrl: updated.bannerUrl,
+        bio: updated.bio,
+        phone: updated.phone,
+        country: updated.country,
+        dateOfBirth: updated.dateOfBirth,
+        clubs: updated.clubs,
+      },
+    });
+  } catch (error) {
+    logger.error('Update me error', { error });
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({ error: error.message });
+      return;
+    }
+    res.status(500).json({ error: 'Failed to update user' });
   }
 });
 
