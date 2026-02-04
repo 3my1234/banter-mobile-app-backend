@@ -121,9 +121,9 @@ router.post('/presign', async (req: Request, res: Response) => {
       expiresIn: 900, // 15 minutes for upload
     });
 
-    // Return backend redirect URL for stable reads (never expires)
-    // Frontend should always use this URL for displaying images/videos
-    const viewUrl = `${API_URL}/api/images/view/${key}`;
+    // Return stable public URL for reads (CloudFront preferred, otherwise public S3)
+    // This avoids redirect latency and works well with mobile image components.
+    const viewUrl = getPublicUrl(key);
 
     logger.info(`Generated presigned URL for user ${user.id}: ${key} (${mimeType})`);
 
