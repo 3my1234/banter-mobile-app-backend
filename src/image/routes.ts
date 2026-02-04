@@ -21,7 +21,6 @@ const s3Client = new S3Client({
 // Accept both S3_BUCKET_NAME and AWS_S3_BUCKET_NAME for compatibility
 const BUCKET_NAME = process.env.S3_BUCKET_NAME || process.env.AWS_S3_BUCKET_NAME || 'banter-uploads';
 const CLOUDFRONT_DOMAIN = process.env.CLOUDFRONT_DOMAIN || process.env.ASSETS_CDN_BASE;
-const API_URL = process.env.API_URL || process.env.DOMAIN || 'https://sportbanter.online';
 const DEFAULT_GET_TTL = 86400; // 24 hours for view URLs
 
 /**
