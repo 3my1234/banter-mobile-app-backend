@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../index';
 import { logger } from '../utils/logger';
 import { AppError } from '../utils/errorHandler';
+import { getIO } from '../websocket/socket';
 
 const router = Router();
 
@@ -60,6 +61,7 @@ router.post('/', async (req: Request, res: Response) => {
     });
 
     let reaction;
+    let action: 'created' | 'updated' | 'removed' = 'created';
     if (existingReaction) {
       if (existingReaction.type === type) {
         // Same reaction, remove it (toggle off)
@@ -67,10 +69,24 @@ router.post('/', async (req: Request, res: Response) => {
           where: { id: existingReaction.id },
         });
         logger.info(`Removed reaction ${type} on post ${postId} by user ${user.id}`);
+        action = 'removed';
+        const reactionCount = await prisma.reaction.count({ where: { postId } });
+        try {
+          getIO().emit('reaction-update', {
+            postId,
+            reactionCount,
+            action,
+            type,
+            userId: user.id,
+          });
+        } catch (error) {
+          logger.warn('WebSocket not available for reaction-update event', { error });
+        }
         return res.json({
           success: true,
           reaction: null,
           message: 'Reaction removed',
+          reactionCount,
         });
       } else {
         // Update reaction type
@@ -89,6 +105,7 @@ router.post('/', async (req: Request, res: Response) => {
           },
         });
         logger.info(`Updated reaction to ${type} on post ${postId} by user ${user.id}`);
+        action = 'updated';
       }
     } else {
       // Create new reaction
@@ -110,6 +127,20 @@ router.post('/', async (req: Request, res: Response) => {
         },
       });
       logger.info(`Created reaction ${type} on post ${postId} by user ${user.id}`);
+      action = 'created';
+    }
+
+    const reactionCount = await prisma.reaction.count({ where: { postId } });
+    try {
+      getIO().emit('reaction-update', {
+        postId,
+        reactionCount,
+        action,
+        type,
+        userId: user.id,
+      });
+    } catch (error) {
+      logger.warn('WebSocket not available for reaction-update event', { error });
     }
 
     return res.json({
@@ -122,6 +153,7 @@ router.post('/', async (req: Request, res: Response) => {
         createdAt: reaction.createdAt,
         user: reaction.user,
       },
+      reactionCount,
     });
   } catch (error) {
     logger.error('Reaction error', { error });

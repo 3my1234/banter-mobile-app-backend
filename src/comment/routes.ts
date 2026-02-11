@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { prisma } from '../index';
 import { logger } from '../utils/logger';
 import { AppError } from '../utils/errorHandler';
+import { getIO } from '../websocket/socket';
 
 const router = Router();
 
@@ -67,6 +68,27 @@ router.post('/', async (req: Request, res: Response) => {
 
     logger.info(`Created comment ${comment.id} on post ${postId} by user ${user.id}`);
 
+    const commentCount = await prisma.comment.count({
+      where: { postId },
+    });
+
+    try {
+      getIO().emit('comment-created', {
+        postId,
+        comment: {
+          id: comment.id,
+          postId: comment.postId,
+          userId: comment.userId,
+          content: comment.content,
+          createdAt: comment.createdAt,
+          user: comment.user,
+        },
+        commentCount,
+      });
+    } catch (error) {
+      logger.warn('WebSocket not available for comment-created event', { error });
+    }
+
     res.status(201).json({
       success: true,
       comment: {
@@ -77,6 +99,7 @@ router.post('/', async (req: Request, res: Response) => {
         createdAt: comment.createdAt,
         user: comment.user,
       },
+      commentCount,
     });
   } catch (error) {
     logger.error('Create comment error', { error });

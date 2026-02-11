@@ -20,17 +20,28 @@ const s3Client = new S3Client({
 
 // Accept both S3_BUCKET_NAME and AWS_S3_BUCKET_NAME for compatibility
 const BUCKET_NAME = process.env.S3_BUCKET_NAME || process.env.AWS_S3_BUCKET_NAME || 'banter-uploads';
-const CLOUDFRONT_DOMAIN = process.env.CLOUDFRONT_DOMAIN || process.env.ASSETS_CDN_BASE;
+// CDN base (custom domain or CloudFront domain). Prefer full base URL if provided.
+const CDN_BASE = process.env.ASSETS_CDN_BASE || process.env.CLOUDFRONT_DOMAIN;
 const DEFAULT_GET_TTL = 86400; // 24 hours for view URLs
+
+function normalizeBaseUrl(value?: string): string | null {
+  if (!value) return null;
+  const trimmed = value.trim().replace(/\/+$/, '');
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+}
+
+const CDN_BASE_URL = normalizeBaseUrl(CDN_BASE);
 
 /**
  * Helper: Get CloudFront or public S3 URL for a key
  */
 function getPublicUrl(key: string): string {
-  if (CLOUDFRONT_DOMAIN) {
+  if (CDN_BASE_URL) {
     // Remove leading slash if present
     const normalizedKey = key.startsWith('/') ? key.substring(1) : key;
-    return `https://${CLOUDFRONT_DOMAIN.replace(/^https?:\/\//, '').replace(/\/$/, '')}/${normalizedKey}`;
+    return `${CDN_BASE_URL}/${normalizedKey}`;
   }
   // Fallback to S3 public URL
   const region = process.env.AWS_REGION || 'eu-north-1';
@@ -184,17 +195,16 @@ router.get('/view/*', async (req: Request, res: Response) => {
       logger.warn(`Could not verify file existence: ${fileCheckError?.message || fileCheckError} - continuing anyway`);
     }
 
-    // Use CloudFront if available (fastest), otherwise generate presigned URL
-    if (CLOUDFRONT_DOMAIN) {
-      const cloudfrontUrl = getPublicUrl(normalizedKey);
-      logger.debug(`✅ Using CloudFront URL: ${cloudfrontUrl}`);
-      // Redirect to CloudFront with cache headers
+    // Use CDN if available (fastest), otherwise generate presigned URL
+    if (CDN_BASE_URL) {
+      const cdnUrl = getPublicUrl(normalizedKey);
+      logger.debug(`✅ Using CDN URL: ${cdnUrl}`);
       return res
         .set({
           'Cache-Control': 'public, max-age=86400', // 24 hours cache
           'Access-Control-Allow-Origin': '*', // CORS for images/videos
         })
-        .redirect(302, cloudfrontUrl);
+        .redirect(302, cdnUrl);
     } else {
       // Fallback: Generate presigned URL (24 hour expiration)
       const presignedUrl = await getPresignedGetUrl(normalizedKey, DEFAULT_GET_TTL);

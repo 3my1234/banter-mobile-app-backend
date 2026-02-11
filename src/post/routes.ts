@@ -285,6 +285,12 @@ router.get('/:id', async (req: Request, res: Response) => {
             },
           },
         },
+        _count: {
+          select: {
+            comments: true,
+            reactions: true,
+          },
+        },
       },
     });
 
@@ -310,6 +316,8 @@ router.get('/:id', async (req: Request, res: Response) => {
         createdAt: post.createdAt,
         user: post.user,
         votes: post.votes,
+        commentCount: post._count.comments,
+        reactionCount: post._count.reactions,
       },
     });
   } catch (error) {
