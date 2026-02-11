@@ -498,7 +498,7 @@ router.post('/:id/repost', jwtAuthMiddleware, async (req: Request, res: Response
       logger.warn('WebSocket not available for repost-update event', { error });
     }
 
-    res.json({
+    return res.json({
       success: true,
       repost: {
         id: created.repost.id,
