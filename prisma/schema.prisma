@@ -91,6 +91,7 @@ model Post {
   // Voting counts
   stayVotes       Int      @default(0)
   dropVotes       Int      @default(0)
+  shareCount      Int      @default(0)
   
   // Tags and League
   tags            String[] // Array of club tags / hashtags

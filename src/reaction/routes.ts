@@ -131,10 +131,23 @@ router.post('/', async (req: Request, res: Response) => {
     }
 
     const reactionCount = await prisma.reaction.count({ where: { postId } });
+    const grouped = await prisma.reaction.groupBy({
+      by: ['type'],
+      where: { postId },
+      _count: { type: true },
+    });
+    const reactionBreakdown = grouped.reduce<Record<string, number>>(
+      (acc, row) => {
+        acc[row.type] = row._count.type;
+        return acc;
+      },
+      {}
+    );
     try {
       getIO().emit('reaction-update', {
         postId,
         reactionCount,
+        reactionBreakdown,
         action,
         type,
         userId: user.id,
@@ -154,6 +167,7 @@ router.post('/', async (req: Request, res: Response) => {
         user: reaction.user,
       },
       reactionCount,
+      reactionBreakdown,
     });
   } catch (error) {
     logger.error('Reaction error', { error });

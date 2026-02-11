@@ -119,6 +119,7 @@ router.post('/', async (req: Request, res: Response) => {
         league: post.league,
         stayVotes: post.stayVotes,
         dropVotes: post.dropVotes,
+        shareCount: post.shareCount,
         status: post.status,
         expiresAt: post.expiresAt,
         createdAt: post.createdAt,
@@ -229,6 +230,7 @@ router.get('/', async (req: Request, res: Response) => {
           league: post.league,
           stayVotes: post.stayVotes,
           dropVotes: post.dropVotes,
+          shareCount: post.shareCount,
           status: post.status,
           expiresAt: post.expiresAt,
           createdAt: post.createdAt,
@@ -298,6 +300,22 @@ router.get('/:id', async (req: Request, res: Response) => {
       throw new AppError('Post not found', 404);
     }
 
+    const reactionCounts = await prisma.reaction.groupBy({
+      by: ['type'],
+      where: { postId },
+      _count: {
+        type: true,
+      },
+    });
+
+    const reactionBreakdown = reactionCounts.reduce<Record<string, number>>(
+      (acc, row) => {
+        acc[row.type] = row._count.type;
+        return acc;
+      },
+      {}
+    );
+
     res.json({
       success: true,
       post: {
@@ -310,6 +328,7 @@ router.get('/:id', async (req: Request, res: Response) => {
         league: post.league,
         stayVotes: post.stayVotes,
         dropVotes: post.dropVotes,
+        shareCount: post.shareCount,
         status: post.status,
         expiresAt: post.expiresAt,
         hiddenAt: post.hiddenAt,
@@ -318,6 +337,7 @@ router.get('/:id', async (req: Request, res: Response) => {
         votes: post.votes,
         commentCount: post._count.comments,
         reactionCount: post._count.reactions,
+        reactionBreakdown,
       },
     });
   } catch (error) {
@@ -326,6 +346,52 @@ router.get('/:id', async (req: Request, res: Response) => {
       throw error;
     }
     throw new AppError('Failed to get post', 500);
+  }
+});
+
+/**
+ * POST /api/posts/:id/share
+ * Increment share count for a post
+ */
+router.post('/:id/share', async (req: Request, res: Response) => {
+  try {
+    const postId = req.params.id;
+
+    const post = await prisma.post.findUnique({
+      where: { id: postId },
+    });
+
+    if (!post) {
+      throw new AppError('Post not found', 404);
+    }
+
+    const updated = await prisma.post.update({
+      where: { id: postId },
+      data: {
+        shareCount: { increment: 1 },
+      },
+    });
+
+    try {
+      const { getIO } = await import('../websocket/socket');
+      getIO().emit('share-update', {
+        postId,
+        shareCount: updated.shareCount,
+      });
+    } catch (error) {
+      logger.warn('WebSocket not available for share-update event', { error });
+    }
+
+    res.json({
+      success: true,
+      shareCount: updated.shareCount,
+    });
+  } catch (error) {
+    logger.error('Share post error', { error });
+    if (error instanceof AppError) {
+      throw error;
+    }
+    throw new AppError('Failed to share post', 500);
   }
 });
 
