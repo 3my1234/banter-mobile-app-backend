@@ -120,6 +120,7 @@ router.post('/', async (req: Request, res: Response) => {
         stayVotes: post.stayVotes,
         dropVotes: post.dropVotes,
         shareCount: post.shareCount,
+        repostCount: post.repostCount,
         status: post.status,
         expiresAt: post.expiresAt,
         createdAt: post.createdAt,
@@ -250,6 +251,7 @@ router.get('/', async (req: Request, res: Response) => {
           stayVotes: post.stayVotes,
           dropVotes: post.dropVotes,
           shareCount: post.shareCount,
+          repostCount: post.repostCount,
           status: post.status,
           expiresAt: post.expiresAt,
           createdAt: post.createdAt,
@@ -349,6 +351,7 @@ router.get('/:id', async (req: Request, res: Response) => {
         stayVotes: post.stayVotes,
         dropVotes: post.dropVotes,
         shareCount: post.shareCount,
+        repostCount: post.repostCount,
         status: post.status,
         expiresAt: post.expiresAt,
         hiddenAt: post.hiddenAt,
@@ -412,6 +415,102 @@ router.post('/:id/share', async (req: Request, res: Response) => {
       throw error;
     }
     throw new AppError('Failed to share post', 500);
+  }
+});
+
+/**
+ * POST /api/posts/:id/repost
+ * Create a repost/rebanter for the current user
+ */
+router.post('/:id/repost', jwtAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('User not authenticated', 401);
+    }
+
+    const postId = req.params.id;
+
+    const original = await prisma.post.findUnique({
+      where: { id: postId },
+    });
+
+    if (!original) {
+      throw new AppError('Post not found', 404);
+    }
+
+    const existing = await prisma.post.findFirst({
+      where: {
+        userId,
+        repostOfId: postId,
+      },
+    });
+
+    if (existing) {
+      return res.json({
+        success: true,
+        repost: {
+          id: existing.id,
+          repostOfId: postId,
+        },
+        repostCount: original.repostCount,
+        message: 'Already reposted',
+      });
+    }
+
+    const expiresAt = new Date();
+    expiresAt.setHours(expiresAt.getHours() + 24);
+
+    const created = await prisma.$transaction(async (tx) => {
+      const repost = await tx.post.create({
+        data: {
+          userId,
+          content: original.content,
+          mediaUrl: original.mediaUrl,
+          mediaType: original.mediaType,
+          isRoast: original.isRoast,
+          tags: original.tags,
+          league: original.league,
+          expiresAt,
+          status: 'ACTIVE',
+          repostOfId: original.id,
+        },
+      });
+
+      const updated = await tx.post.update({
+        where: { id: original.id },
+        data: {
+          repostCount: { increment: 1 },
+        },
+      });
+
+      return { repost, updated };
+    });
+
+    try {
+      const { getIO } = await import('../websocket/socket');
+      getIO().emit('repost-update', {
+        postId,
+        repostCount: created.updated.repostCount,
+      });
+    } catch (error) {
+      logger.warn('WebSocket not available for repost-update event', { error });
+    }
+
+    res.json({
+      success: true,
+      repost: {
+        id: created.repost.id,
+        repostOfId: postId,
+      },
+      repostCount: created.updated.repostCount,
+    });
+  } catch (error) {
+    logger.error('Repost error', { error });
+    if (error instanceof AppError) {
+      throw error;
+    }
+    throw new AppError('Failed to repost', 500);
   }
 });
 

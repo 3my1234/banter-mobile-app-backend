@@ -81,6 +81,9 @@ model Post {
   id              String   @id @default(cuid())
   userId          String
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  repostOfId      String?
+  repostOf        Post?    @relation("PostReposts", fields: [repostOfId], references: [id], onDelete: SetNull)
+  reposts         Post[]   @relation("PostReposts")
   
   content         String
   imageUrl        String?  // Deprecated: use mediaUrl instead
@@ -92,6 +95,7 @@ model Post {
   stayVotes       Int      @default(0)
   dropVotes       Int      @default(0)
   shareCount      Int      @default(0)
+  repostCount     Int      @default(0)
   
   // Tags and League
   tags            String[] // Array of club tags / hashtags
@@ -116,6 +120,8 @@ model Post {
   @@index([expiresAt])
   @@index([league])
   @@index([isRoast])
+  @@index([repostOfId])
+  @@unique([userId, repostOfId])
 }
 
 enum PostStatus {
