@@ -209,6 +209,25 @@ router.get('/', async (req: Request, res: Response) => {
       take: limit,
     });
 
+    const postIds = posts.map((p) => p.id);
+    const reactionGroups = postIds.length
+      ? await prisma.reaction.groupBy({
+          by: ['postId', 'type'],
+          where: { postId: { in: postIds } },
+          _count: { type: true },
+        })
+      : [];
+
+    const reactionMap = reactionGroups.reduce<Record<string, Record<string, number>>>(
+      (acc, row) => {
+        const postId = row.postId as string;
+        if (!acc[postId]) acc[postId] = {};
+        acc[postId][row.type] = row._count.type;
+        return acc;
+      },
+      {}
+    );
+
     const total = await prisma.post.count({
       where: whereClause,
     });
@@ -238,6 +257,7 @@ router.get('/', async (req: Request, res: Response) => {
           userVote: userVote ? userVote.voteType : null,
           commentCount: post._count.comments,
           reactionCount: post._count.reactions,
+          reactionBreakdown: reactionMap[post.id] || {},
         };
       }),
       pagination: {
