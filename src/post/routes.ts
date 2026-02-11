@@ -3,6 +3,7 @@ import { prisma } from '../index';
 import { logger } from '../utils/logger';
 import { AppError } from '../utils/errorHandler';
 import { addPostExpirationJob } from '../queue/postQueue';
+import { jwtAuthMiddleware } from '../auth/jwtMiddleware';
 
 const router = Router();
 
