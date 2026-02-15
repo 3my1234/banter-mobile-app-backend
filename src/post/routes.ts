@@ -37,9 +37,15 @@ router.post('/', async (req: Request, res: Response) => {
       throw new AppError('User not found', 404);
     }
 
-    // Create post with 24-hour expiration
+    // Expiration:
+    // - Roasts expire in 24 hours
+    // - Normal posts never expire (set far-future timestamp)
     const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 24);
+    if (isRoast === true) {
+      expiresAt.setHours(expiresAt.getHours() + 24);
+    } else {
+      expiresAt.setFullYear(expiresAt.getFullYear() + 100);
+    }
 
     // Process tags - create or link tags
     const tagArray = Array.isArray(tags) ? tags : [];
@@ -103,8 +109,10 @@ router.post('/', async (req: Request, res: Response) => {
       },
     });
 
-    // Schedule expiration job
-    await addPostExpirationJob(post.id, expiresAt);
+    // Schedule expiration job only for roasts
+    if (post.isRoast) {
+      await addPostExpirationJob(post.id, expiresAt);
+    }
 
     logger.info(`Created post ${post.id} by user ${user.id}`);
 
@@ -153,9 +161,15 @@ router.get('/', async (req: Request, res: Response) => {
     // Build where clause based on feed type
     let whereClause: any = {
       status: 'ACTIVE',
-      expiresAt: {
-        gt: new Date(), // Only show posts that haven't expired
-      },
+      OR: [
+        { isRoast: false },
+        {
+          isRoast: true,
+          expiresAt: {
+            gt: new Date(), // Only show roasts that haven't expired
+          },
+        },
+      ],
     };
 
     if (feed === 'following' && userId) {
@@ -460,7 +474,11 @@ router.post('/:id/repost', jwtAuthMiddleware, async (req: Request, res: Response
     }
 
     const expiresAt = new Date();
-    expiresAt.setHours(expiresAt.getHours() + 24);
+    if (original.isRoast) {
+      expiresAt.setHours(expiresAt.getHours() + 24);
+    } else {
+      expiresAt.setFullYear(expiresAt.getFullYear() + 100);
+    }
 
     const created = await prisma.$transaction(async (tx) => {
       const repost = await tx.post.create({

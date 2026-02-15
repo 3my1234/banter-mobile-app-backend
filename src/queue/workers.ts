@@ -31,6 +31,11 @@ const postExpirationWorker = new Worker(
         return;
       }
 
+      if (!post.isRoast) {
+        logger.info(`Post ${postId} is not a roast, skipping expiration`);
+        return;
+      }
+
       if (post.status !== 'ACTIVE') {
         logger.info(`Post ${postId} is already ${post.status}, skipping`);
         return;

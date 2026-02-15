@@ -28,9 +28,13 @@ router.get('/:id/posts', async (req: Request, res: Response) => {
       where: {
         userId,
         status: 'ACTIVE',
-        expiresAt: {
-          gt: new Date(),
-        },
+        OR: [
+          { isRoast: false },
+          {
+            isRoast: true,
+            expiresAt: { gt: new Date() },
+          },
+        ],
       },
       include: {
         user: {
@@ -71,9 +75,13 @@ router.get('/:id/posts', async (req: Request, res: Response) => {
       where: {
         userId,
         status: 'ACTIVE',
-        expiresAt: {
-          gt: new Date(),
-        },
+        OR: [
+          { isRoast: false },
+          {
+            isRoast: true,
+            expiresAt: { gt: new Date() },
+          },
+        ],
       },
     });
 
