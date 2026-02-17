@@ -449,6 +449,191 @@ router.get('/:id', async (req: Request, res: Response) => {
 });
 
 /**
+ * PATCH /api/posts/:id
+ * Edit a post (content only)
+ */
+router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('User not authenticated', 401);
+    }
+
+    const postId = req.params.id;
+    const content = typeof req.body?.content === 'string' ? req.body.content.trim() : null;
+
+    if (content !== null && content.length === 0) {
+      throw new AppError('Post content cannot be empty', 400);
+    }
+
+    const post = await prisma.post.findUnique({
+      where: { id: postId },
+    });
+
+    if (!post) {
+      throw new AppError('Post not found', 404);
+    }
+
+    if (post.userId !== userId) {
+      throw new AppError('Not authorized to edit this post', 403);
+    }
+
+    if (post.status !== 'ACTIVE') {
+      throw new AppError('Cannot edit an inactive post', 400);
+    }
+
+    const updated = await prisma.post.update({
+      where: { id: postId },
+      data: {
+        content: content ?? post.content,
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            displayName: true,
+            username: true,
+            avatarUrl: true,
+          },
+        },
+        _count: {
+          select: {
+            comments: true,
+            reactions: true,
+          },
+        },
+        repostOf: {
+          select: {
+            id: true,
+            content: true,
+            mediaUrl: true,
+            mediaType: true,
+            isRoast: true,
+            tags: true,
+            league: true,
+            createdAt: true,
+            user: {
+              select: {
+                id: true,
+                displayName: true,
+                username: true,
+                avatarUrl: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    res.json({
+      success: true,
+      post: {
+        id: updated.id,
+        content: updated.content,
+        mediaUrl: updated.mediaUrl,
+        mediaType: updated.mediaType,
+        isRoast: updated.isRoast,
+        tags: updated.tags,
+        league: updated.league,
+        stayVotes: updated.stayVotes,
+        dropVotes: updated.dropVotes,
+        shareCount: updated.shareCount,
+        repostCount: updated.repostCount,
+        status: updated.status,
+        expiresAt: updated.expiresAt,
+        hiddenAt: updated.hiddenAt,
+        createdAt: updated.createdAt,
+        user: updated.user,
+        commentCount: updated._count.comments,
+        reactionCount: updated._count.reactions,
+        repostOf: updated.repostOf,
+      },
+    });
+  } catch (error) {
+    logger.error('Edit post error', { error });
+    if (error instanceof AppError) {
+      throw error;
+    }
+    throw new AppError('Failed to edit post', 500);
+  }
+});
+
+/**
+ * DELETE /api/posts/:id
+ * Hide (delete) a post
+ */
+router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('User not authenticated', 401);
+    }
+
+    const postId = req.params.id;
+
+    const post = await prisma.post.findUnique({
+      where: { id: postId },
+    });
+
+    if (!post) {
+      throw new AppError('Post not found', 404);
+    }
+
+    if (post.userId !== userId) {
+      throw new AppError('Not authorized to delete this post', 403);
+    }
+
+    if (post.status !== 'ACTIVE') {
+      return res.json({ success: true });
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const hidden = await tx.post.update({
+        where: { id: postId },
+        data: {
+          status: 'HIDDEN',
+          hiddenAt: new Date(),
+        },
+      });
+
+      let repostCount: number | null = null;
+      if (hidden.repostOfId) {
+        const original = await tx.post.update({
+          where: { id: hidden.repostOfId },
+          data: {
+            repostCount: { decrement: 1 },
+          },
+        });
+        repostCount = original.repostCount;
+      }
+
+      return { hidden, repostCount };
+    });
+
+    try {
+      const { getIO } = await import('../websocket/socket');
+      getIO().emit('post-hidden', { postId });
+      if (post.repostOfId && typeof updated.repostCount === 'number') {
+        getIO().emit('repost-update', {
+          postId: post.repostOfId,
+          repostCount: updated.repostCount,
+        });
+      }
+    } catch (error) {
+      logger.warn('WebSocket not available for post-hidden event', { error });
+    }
+
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Delete post error', { error });
+    if (error instanceof AppError) {
+      throw error;
+    }
+    throw new AppError('Failed to delete post', 500);
+  }
+});
+
+/**
  * POST /api/posts/:id/share
  * Increment share count for a post
  */
