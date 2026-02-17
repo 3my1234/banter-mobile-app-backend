@@ -159,9 +159,18 @@ router.get('/', async (req: Request, res: Response) => {
     const skip = (page - 1) * limit;
 
     // Build where clause based on feed type
+    const type = (req.query.type as string) || 'all';
     let whereClause: any = {
       status: 'ACTIVE',
-      OR: [
+    };
+
+    if (type === 'posts') {
+      whereClause.isRoast = false;
+    } else if (type === 'banter') {
+      whereClause.isRoast = true;
+      whereClause.expiresAt = { gt: new Date() };
+    } else {
+      whereClause.OR = [
         { isRoast: false },
         {
           isRoast: true,
@@ -169,10 +178,20 @@ router.get('/', async (req: Request, res: Response) => {
             gt: new Date(), // Only show roasts that haven't expired
           },
         },
-      ],
-    };
+      ];
+    }
 
-    if (feed === 'following' && userId) {
+    if (feed === 'following' && userId && type === 'banter') {
+      whereClause.AND = [
+        {
+          OR: [
+            { votes: { some: { userId } } },
+            { comments: { some: { userId } } },
+            { reactions: { some: { userId } } },
+          ],
+        },
+      ];
+    } else if (feed === 'following' && userId) {
       // TODO: Implement following logic when Follow model is added
       // For now, return empty or all posts
       // whereClause.userId = { in: followedUserIds };
@@ -217,6 +236,26 @@ router.get('/', async (req: Request, res: Response) => {
           select: {
             comments: true,
             reactions: true,
+          },
+        },
+        repostOf: {
+          select: {
+            id: true,
+            content: true,
+            mediaUrl: true,
+            mediaType: true,
+            isRoast: true,
+            tags: true,
+            league: true,
+            createdAt: true,
+            user: {
+              select: {
+                id: true,
+                displayName: true,
+                username: true,
+                avatarUrl: true,
+              },
+            },
           },
         },
       },
@@ -275,6 +314,7 @@ router.get('/', async (req: Request, res: Response) => {
           commentCount: post._count.comments,
           reactionCount: post._count.reactions,
           reactionBreakdown: reactionMap[post.id] || {},
+          repostOf: post.repostOf,
         };
       }),
       pagination: {
@@ -330,6 +370,26 @@ router.get('/:id', async (req: Request, res: Response) => {
             reactions: true,
           },
         },
+        repostOf: {
+          select: {
+            id: true,
+            content: true,
+            mediaUrl: true,
+            mediaType: true,
+            isRoast: true,
+            tags: true,
+            league: true,
+            createdAt: true,
+            user: {
+              select: {
+                id: true,
+                displayName: true,
+                username: true,
+                avatarUrl: true,
+              },
+            },
+          },
+        },
       },
     });
 
@@ -376,6 +436,7 @@ router.get('/:id', async (req: Request, res: Response) => {
         commentCount: post._count.comments,
         reactionCount: post._count.reactions,
         reactionBreakdown,
+        repostOf: post.repostOf,
       },
     });
   } catch (error) {
@@ -445,6 +506,7 @@ router.post('/:id/repost', jwtAuthMiddleware, async (req: Request, res: Response
     }
 
     const postId = req.params.id;
+    const comment = typeof req.body?.comment === 'string' ? req.body.comment.trim() : '';
 
     const original = await prisma.post.findUnique({
       where: { id: postId },
@@ -484,9 +546,9 @@ router.post('/:id/repost', jwtAuthMiddleware, async (req: Request, res: Response
       const repost = await tx.post.create({
         data: {
           userId,
-          content: original.content,
-          mediaUrl: original.mediaUrl,
-          mediaType: original.mediaType,
+          content: comment || '',
+          mediaUrl: null,
+          mediaType: null,
           isRoast: original.isRoast,
           tags: original.tags,
           league: original.league,
