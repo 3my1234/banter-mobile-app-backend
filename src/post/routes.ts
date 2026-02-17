@@ -413,7 +413,7 @@ router.get('/:id', async (req: Request, res: Response) => {
       {}
     );
 
-    res.json({
+    return res.json({
       success: true,
       post: {
         id: post.id,
@@ -623,7 +623,7 @@ router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => 
       logger.warn('WebSocket not available for post-hidden event', { error });
     }
 
-    res.json({ success: true });
+    return res.json({ success: true });
   } catch (error) {
     logger.error('Delete post error', { error });
     if (error instanceof AppError) {

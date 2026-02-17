@@ -66,7 +66,7 @@ router.post('/', async (req: Request, res: Response) => {
     }
 
     if (post.userId === user.id) {
-      throw new AppError('Cannot vote on your own post', 400);
+      throw new AppError("You can't vote on your own post.", 400);
     }
 
     // Check if user already voted
