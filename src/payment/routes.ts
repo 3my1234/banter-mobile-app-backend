@@ -26,8 +26,8 @@ const priceToRaw = (price: number) =>
 const findBundle = (bundleId: string) =>
   VOTE_BUNDLES.find((bundle) => bundle.id === bundleId);
 
-router.get('/votes/bundles', (_req: Request, res: Response) => {
-  res.json({
+router.get('/votes/bundles', (_req: Request, res: Response): Response => {
+  return res.json({
     success: true,
     bundles: VOTE_BUNDLES.map((bundle) => ({
       id: bundle.id,
@@ -40,7 +40,7 @@ router.get('/votes/bundles', (_req: Request, res: Response) => {
   });
 });
 
-router.post('/solana/votes/create', async (req: Request, res: Response) => {
+router.post('/solana/votes/create', async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
@@ -87,7 +87,7 @@ router.post('/solana/votes/create', async (req: Request, res: Response) => {
       },
     });
 
-    res.json({
+    return res.json({
       success: true,
       paymentId: payment.id,
       chain: 'SOLANA',
@@ -108,7 +108,7 @@ router.post('/solana/votes/create', async (req: Request, res: Response) => {
   }
 });
 
-router.post('/solana/votes/verify', async (req: Request, res: Response) => {
+router.post('/solana/votes/verify', async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
