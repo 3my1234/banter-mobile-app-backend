@@ -160,6 +160,10 @@ model Comment {
   userId          String
   user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   
+  parentId        String?
+  parent          Comment? @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies         Comment[] @relation("CommentReplies")
+
   content         String
   
   createdAt       DateTime @default(now())
@@ -167,6 +171,7 @@ model Comment {
   
   @@index([postId])
   @@index([userId])
+  @@index([parentId])
 }
 
 // Reaction model - Reactions on posts (like, love, laugh, etc.)

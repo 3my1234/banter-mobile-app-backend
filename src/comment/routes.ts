@@ -8,6 +8,75 @@ import { jwtAuthMiddleware } from '../auth/jwtMiddleware';
 const router = Router();
 
 /**
+ * GET /api/comments/:commentId/replies
+ * Get replies for a comment
+ */
+router.get('/replies/:commentId', async (req: Request, res: Response) => {
+  try {
+    const commentId = req.params.commentId;
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const skip = (page - 1) * limit;
+
+    const parent = await prisma.comment.findUnique({
+      where: { id: commentId },
+    });
+
+    if (!parent) {
+      throw new AppError('Comment not found', 404);
+    }
+
+    const replies = await prisma.comment.findMany({
+      where: { parentId: commentId },
+      include: {
+        user: {
+          select: {
+            id: true,
+            displayName: true,
+            username: true,
+            avatarUrl: true,
+          },
+        },
+      },
+      orderBy: {
+        createdAt: 'asc',
+      },
+      skip,
+      take: limit,
+    });
+
+    const total = await prisma.comment.count({
+      where: { parentId: commentId },
+    });
+
+    res.json({
+      success: true,
+      replies: replies.map((comment) => ({
+        id: comment.id,
+        postId: comment.postId,
+        userId: comment.userId,
+        parentId: comment.parentId,
+        content: comment.content,
+        createdAt: comment.createdAt,
+        user: comment.user,
+      })),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    logger.error('Get comment replies error', { error });
+    if (error instanceof AppError) {
+      throw error;
+    }
+    throw new AppError('Failed to get comment replies', 500);
+  }
+});
+
+/**
  * POST /api/comments
  * Create a comment on a post
  */
@@ -18,7 +87,7 @@ router.post('/', async (req: Request, res: Response) => {
       throw new AppError('User not authenticated', 401);
     }
 
-    const { postId, content } = req.body;
+    const { postId, content, parentId } = req.body;
 
     if (!postId) {
       throw new AppError('Post ID is required', 400);
@@ -49,11 +118,32 @@ router.post('/', async (req: Request, res: Response) => {
       throw new AppError('Cannot comment on inactive post', 400);
     }
 
+    let parent: { id: string; postId: string; parentId: string | null } | null = null;
+    if (parentId) {
+      parent = await prisma.comment.findUnique({
+        where: { id: parentId },
+        select: { id: true, postId: true, parentId: true },
+      });
+
+      if (!parent) {
+        throw new AppError('Parent comment not found', 404);
+      }
+
+      if (parent.postId !== postId) {
+        throw new AppError('Parent comment does not belong to this post', 400);
+      }
+
+      if (parent.parentId) {
+        throw new AppError('Replies are only supported one level deep', 400);
+      }
+    }
+
     const comment = await prisma.comment.create({
       data: {
         postId,
         userId: user.id,
         content: content.trim(),
+        parentId: parent?.id ?? null,
       },
       include: {
         user: {
@@ -80,6 +170,7 @@ router.post('/', async (req: Request, res: Response) => {
           id: comment.id,
           postId: comment.postId,
           userId: comment.userId,
+          parentId: comment.parentId,
           content: comment.content,
           createdAt: comment.createdAt,
           user: comment.user,
@@ -96,6 +187,7 @@ router.post('/', async (req: Request, res: Response) => {
         id: comment.id,
         postId: comment.postId,
         userId: comment.userId,
+        parentId: comment.parentId,
         content: comment.content,
         createdAt: comment.createdAt,
         user: comment.user,
@@ -113,13 +205,15 @@ router.post('/', async (req: Request, res: Response) => {
 
 /**
  * GET /api/comments/:postId
- * Get all comments for a post
+ * Get all comments for a post (top-level by default)
  */
 router.get('/:postId', async (req: Request, res: Response) => {
   try {
     const postId = req.params.postId;
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 50;
+    const parentId = typeof req.query.parentId === 'string' ? req.query.parentId : undefined;
+    const includeReplies = req.query.includeReplies === '1';
     const skip = (page - 1) * limit;
 
     // Check if post exists
@@ -132,7 +226,7 @@ router.get('/:postId', async (req: Request, res: Response) => {
     }
 
     const comments = await prisma.comment.findMany({
-      where: { postId },
+      where: { postId, parentId: parentId ?? null },
       include: {
         user: {
           select: {
@@ -141,6 +235,25 @@ router.get('/:postId', async (req: Request, res: Response) => {
             username: true,
             avatarUrl: true,
           },
+        },
+        replies: includeReplies
+          ? {
+              include: {
+                user: {
+                  select: {
+                    id: true,
+                    displayName: true,
+                    username: true,
+                    avatarUrl: true,
+                  },
+                },
+              },
+              orderBy: { createdAt: 'desc' },
+              take: 2,
+            }
+          : undefined,
+        _count: {
+          select: { replies: true },
         },
       },
       orderBy: {
@@ -151,7 +264,7 @@ router.get('/:postId', async (req: Request, res: Response) => {
     });
 
     const total = await prisma.comment.count({
-      where: { postId },
+      where: { postId, parentId: parentId ?? null },
     });
 
     res.json({
@@ -160,9 +273,22 @@ router.get('/:postId', async (req: Request, res: Response) => {
         id: comment.id,
         postId: comment.postId,
         userId: comment.userId,
+        parentId: comment.parentId,
         content: comment.content,
         createdAt: comment.createdAt,
         user: comment.user,
+        replyCount: comment._count?.replies || 0,
+        replies: comment.replies
+          ? comment.replies.map((reply) => ({
+              id: reply.id,
+              postId: reply.postId,
+              userId: reply.userId,
+              parentId: reply.parentId,
+              content: reply.content,
+              createdAt: reply.createdAt,
+              user: reply.user,
+            }))
+          : undefined,
       })),
       pagination: {
         page,
@@ -222,6 +348,9 @@ router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
             avatarUrl: true,
           },
         },
+        _count: {
+          select: { replies: true },
+        },
       },
     });
 
@@ -232,9 +361,11 @@ router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
           id: updated.id,
           postId: updated.postId,
           userId: updated.userId,
+          parentId: updated.parentId,
           content: updated.content,
           createdAt: updated.createdAt,
           user: updated.user,
+          replyCount: updated._count?.replies || 0,
         },
       });
     } catch (error) {
