@@ -27,6 +27,7 @@ model User {
   country         String?
   dateOfBirth     DateTime?
   clubs           String[] @default([])
+  voteBalance     Int      @default(0)
   
   // Relations
   wallets         Wallet[]
@@ -34,6 +35,7 @@ model User {
   votes           Vote[]
   comments        Comment[]
   reactions       Reaction[]
+  payments        Payment[]
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -300,6 +302,8 @@ model WalletTransaction {
   blockTime       DateTime?
   description     String?
   metadata        Json?
+  paymentId       String?
+  payment         Payment? @relation(fields: [paymentId], references: [id], onDelete: SetNull)
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -308,4 +312,47 @@ model WalletTransaction {
   @@index([txHash])
   @@index([txType])
   @@index([blockTime])
+  @@index([paymentId])
+}
+
+enum PaymentStatus {
+  PENDING
+  COMPLETED
+  FAILED
+}
+
+enum PaymentChain {
+  SOLANA
+  MOVEMENT
+}
+
+enum PaymentType {
+  VOTE_PURCHASE
+  OTHER
+}
+
+model Payment {
+  id              String        @id @default(cuid())
+  userId          String
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  paymentType     PaymentType
+  chain           PaymentChain
+  amount          Float
+  amountRaw       String
+  currency        String
+  tokenAddress    String
+  fromAddress     String
+  toAddress       String
+  status          PaymentStatus @default(PENDING)
+  txHash          String?
+  metadata        Json?
+  completedAt     DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  walletTransactions WalletTransaction[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([chain])
 }

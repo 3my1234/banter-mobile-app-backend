@@ -107,13 +107,30 @@ router.post('/', async (req: Request, res: Response) => {
         voteCountChange = { stay: 1, drop: -1 };
       }
     } else {
-      // Create new vote
-      vote = await prisma.vote.create({
-        data: {
-          postId,
-          userId: user.id,
-          voteType,
-        },
+      if (user.voteBalance <= 0) {
+        throw new AppError('You need vote credits to vote. Buy more in the Votes tab.', 402);
+      }
+
+      // Create new vote and decrement balance
+      vote = await prisma.$transaction(async (tx) => {
+        const created = await tx.vote.create({
+          data: {
+            postId,
+            userId: user.id,
+            voteType,
+          },
+        });
+
+        await tx.user.update({
+          where: { id: user.id },
+          data: {
+            voteBalance: {
+              decrement: 1,
+            },
+          },
+        });
+
+        return created;
       });
 
       // Update vote counts

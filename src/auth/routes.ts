@@ -240,6 +240,7 @@ router.get('/me', jwtAuthMiddleware, async (req: Request, res: Response): Promis
         username: user.username,
         solanaAddress: user.solanaAddress,
         movementAddress: user.movementAddress,
+        voteBalance: user.voteBalance,
         avatarUrl: user.avatarUrl,
         bannerUrl: user.bannerUrl,
         bio: user.bio,
