@@ -70,9 +70,9 @@ router.get('/replies/:commentId', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Get comment replies error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to get comment replies', 500);
+    return res.status(500).json({ success: false, message: 'Failed to get comment replies' });
   }
 });
 
@@ -197,9 +197,9 @@ router.post('/', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Create comment error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to create comment', 500);
+    return res.status(500).json({ success: false, message: 'Failed to create comment' });
   }
 });
 
@@ -305,9 +305,9 @@ router.get('/:postId', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Get comments error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to get comments', 500);
+    return res.status(500).json({ success: false, message: 'Failed to get comments' });
   }
 });
 
@@ -391,9 +391,9 @@ router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Edit comment error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to edit comment', 500);
+    return res.status(500).json({ success: false, message: 'Failed to edit comment' });
   }
 });
 
@@ -447,9 +447,9 @@ router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => 
   } catch (error) {
     logger.error('Delete comment error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to delete comment', 500);
+    return res.status(500).json({ success: false, message: 'Failed to delete comment' });
   }
 });
 
