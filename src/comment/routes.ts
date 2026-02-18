@@ -269,7 +269,11 @@ router.get('/:postId', async (req: Request, res: Response) => {
 
     res.json({
       success: true,
-      comments: comments.map((comment) => ({
+      comments: comments.map((comment) => {
+        const replyList = includeReplies
+          ? (comment.replies as any[] | undefined)
+          : undefined;
+        return {
         id: comment.id,
         postId: comment.postId,
         userId: comment.userId,
@@ -278,8 +282,8 @@ router.get('/:postId', async (req: Request, res: Response) => {
         createdAt: comment.createdAt,
         user: comment.user,
         replyCount: comment._count?.replies || 0,
-        replies: comment.replies
-          ? comment.replies.map((reply) => ({
+        replies: replyList
+          ? replyList.map((reply) => ({
               id: reply.id,
               postId: reply.postId,
               userId: reply.userId,
@@ -289,7 +293,8 @@ router.get('/:postId', async (req: Request, res: Response) => {
               user: reply.user,
             }))
           : undefined,
-      })),
+        };
+      }),
       pagination: {
         page,
         limit,
