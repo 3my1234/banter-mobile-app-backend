@@ -1,7 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../index';
 import { logger } from '../utils/logger';
-import { AppError } from '../utils/errorHandler';
 import { getIO } from '../websocket/socket';
 import { jwtAuthMiddleware } from '../auth/jwtMiddleware';
 
