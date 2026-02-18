@@ -11,7 +11,7 @@ const router = Router();
  * GET /api/comments/:commentId/replies
  * Get replies for a comment
  */
-router.get('/replies/:commentId', async (req: Request, res: Response) => {
+router.get('/replies/:commentId', async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const commentId = req.params.commentId;
     const page = parseInt(req.query.page as string) || 1;
@@ -23,7 +23,7 @@ router.get('/replies/:commentId', async (req: Request, res: Response) => {
     });
 
     if (!parent) {
-      throw new AppError('Comment not found', 404);
+      return res.status(404).json({ success: false, message: 'Comment not found' });
     }
 
     const replies = await prisma.comment.findMany({
@@ -49,7 +49,7 @@ router.get('/replies/:commentId', async (req: Request, res: Response) => {
       where: { parentId: commentId },
     });
 
-    res.json({
+    return res.json({
       success: true,
       replies: replies.map((comment) => ({
         id: comment.id,
@@ -69,9 +69,6 @@ router.get('/replies/:commentId', async (req: Request, res: Response) => {
     });
   } catch (error) {
     logger.error('Get comment replies error', { error });
-    if (error instanceof AppError) {
-      return res.status(error.statusCode).json({ success: false, message: error.message });
-    }
     return res.status(500).json({ success: false, message: 'Failed to get comment replies' });
   }
 });
@@ -80,21 +77,21 @@ router.get('/replies/:commentId', async (req: Request, res: Response) => {
  * POST /api/comments
  * Create a comment on a post
  */
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
-      throw new AppError('User not authenticated', 401);
+      return res.status(401).json({ success: false, message: 'User not authenticated' });
     }
 
     const { postId, content, parentId } = req.body;
 
     if (!postId) {
-      throw new AppError('Post ID is required', 400);
+      return res.status(400).json({ success: false, message: 'Post ID is required' });
     }
 
     if (!content || content.trim().length === 0) {
-      throw new AppError('Comment content is required', 400);
+      return res.status(400).json({ success: false, message: 'Comment content is required' });
     }
 
     const user = await prisma.user.findUnique({
@@ -102,7 +99,7 @@ router.post('/', async (req: Request, res: Response) => {
     });
 
     if (!user) {
-      throw new AppError('User not found', 404);
+      return res.status(404).json({ success: false, message: 'User not found' });
     }
 
     // Check if post exists
@@ -111,11 +108,11 @@ router.post('/', async (req: Request, res: Response) => {
     });
 
     if (!post) {
-      throw new AppError('Post not found', 404);
+      return res.status(404).json({ success: false, message: 'Post not found' });
     }
 
     if (post.status !== 'ACTIVE') {
-      throw new AppError('Cannot comment on inactive post', 400);
+      return res.status(400).json({ success: false, message: 'Cannot comment on inactive post' });
     }
 
     let parent: { id: string; postId: string; parentId: string | null } | null = null;
@@ -126,15 +123,15 @@ router.post('/', async (req: Request, res: Response) => {
       });
 
       if (!parent) {
-        throw new AppError('Parent comment not found', 404);
+        return res.status(404).json({ success: false, message: 'Parent comment not found' });
       }
 
       if (parent.postId !== postId) {
-        throw new AppError('Parent comment does not belong to this post', 400);
+        return res.status(400).json({ success: false, message: 'Parent comment does not belong to this post' });
       }
 
       if (parent.parentId) {
-        throw new AppError('Replies are only supported one level deep', 400);
+        return res.status(400).json({ success: false, message: 'Replies are only supported one level deep' });
       }
     }
 
@@ -181,7 +178,7 @@ router.post('/', async (req: Request, res: Response) => {
       logger.warn('WebSocket not available for comment-created event', { error });
     }
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       comment: {
         id: comment.id,
@@ -196,9 +193,6 @@ router.post('/', async (req: Request, res: Response) => {
     });
   } catch (error) {
     logger.error('Create comment error', { error });
-    if (error instanceof AppError) {
-      return res.status(error.statusCode).json({ success: false, message: error.message });
-    }
     return res.status(500).json({ success: false, message: 'Failed to create comment' });
   }
 });
@@ -207,7 +201,7 @@ router.post('/', async (req: Request, res: Response) => {
  * GET /api/comments/:postId
  * Get all comments for a post (top-level by default)
  */
-router.get('/:postId', async (req: Request, res: Response) => {
+router.get('/:postId', async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const postId = req.params.postId;
     const page = parseInt(req.query.page as string) || 1;
@@ -222,7 +216,7 @@ router.get('/:postId', async (req: Request, res: Response) => {
     });
 
     if (!post) {
-      throw new AppError('Post not found', 404);
+      return res.status(404).json({ success: false, message: 'Post not found' });
     }
 
     const comments = await prisma.comment.findMany({
@@ -267,7 +261,7 @@ router.get('/:postId', async (req: Request, res: Response) => {
       where: { postId, parentId: parentId ?? null },
     });
 
-    res.json({
+    return res.json({
       success: true,
       comments: comments.map((comment) => {
         const replyList = includeReplies
@@ -304,9 +298,6 @@ router.get('/:postId', async (req: Request, res: Response) => {
     });
   } catch (error) {
     logger.error('Get comments error', { error });
-    if (error instanceof AppError) {
-      return res.status(error.statusCode).json({ success: false, message: error.message });
-    }
     return res.status(500).json({ success: false, message: 'Failed to get comments' });
   }
 });
@@ -315,18 +306,18 @@ router.get('/:postId', async (req: Request, res: Response) => {
  * PATCH /api/comments/:id
  * Edit a comment
  */
-router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
+router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
-      throw new AppError('User not authenticated', 401);
+      return res.status(401).json({ success: false, message: 'User not authenticated' });
     }
 
     const commentId = req.params.id;
     const content = typeof req.body?.content === 'string' ? req.body.content.trim() : '';
 
     if (!content) {
-      throw new AppError('Comment content is required', 400);
+      return res.status(400).json({ success: false, message: 'Comment content is required' });
     }
 
     const comment = await prisma.comment.findUnique({
@@ -334,11 +325,11 @@ router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
     });
 
     if (!comment) {
-      throw new AppError('Comment not found', 404);
+      return res.status(404).json({ success: false, message: 'Comment not found' });
     }
 
     if (comment.userId !== userId) {
-      throw new AppError('Not authorized to edit this comment', 403);
+      return res.status(403).json({ success: false, message: 'Not authorized to edit this comment' });
     }
 
     const updated = await prisma.comment.update({
@@ -377,7 +368,7 @@ router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
       logger.warn('WebSocket not available for comment-updated event', { error });
     }
 
-    res.json({
+    return res.json({
       success: true,
       comment: {
         id: updated.id,
@@ -390,9 +381,6 @@ router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
     });
   } catch (error) {
     logger.error('Edit comment error', { error });
-    if (error instanceof AppError) {
-      return res.status(error.statusCode).json({ success: false, message: error.message });
-    }
     return res.status(500).json({ success: false, message: 'Failed to edit comment' });
   }
 });
@@ -401,11 +389,11 @@ router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
  * DELETE /api/comments/:id
  * Delete a comment
  */
-router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
+router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
-      throw new AppError('User not authenticated', 401);
+      return res.status(401).json({ success: false, message: 'User not authenticated' });
     }
 
     const commentId = req.params.id;
@@ -414,11 +402,11 @@ router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => 
     });
 
     if (!comment) {
-      throw new AppError('Comment not found', 404);
+      return res.status(404).json({ success: false, message: 'Comment not found' });
     }
 
     if (comment.userId !== userId) {
-      throw new AppError('Not authorized to delete this comment', 403);
+      return res.status(403).json({ success: false, message: 'Not authorized to delete this comment' });
     }
 
     await prisma.comment.delete({
@@ -439,16 +427,13 @@ router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => 
       logger.warn('WebSocket not available for comment-deleted event', { error });
     }
 
-    res.json({
+    return res.json({
       success: true,
       commentId,
       commentCount,
     });
   } catch (error) {
     logger.error('Delete comment error', { error });
-    if (error instanceof AppError) {
-      return res.status(error.statusCode).json({ success: false, message: error.message });
-    }
     return res.status(500).json({ success: false, message: 'Failed to delete comment' });
   }
 });
