@@ -120,4 +120,139 @@ router.get('/:id/posts', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /api/users/:id
+ * Get user profile with follow stats
+ */
+router.get('/:id', async (req: Request, res: Response) => {
+  try {
+    const userId = req.params.id;
+    const viewerId = req.user?.userId;
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        displayName: true,
+        username: true,
+        avatarUrl: true,
+        bannerUrl: true,
+        bio: true,
+        createdAt: true,
+      },
+    });
+
+    if (!user) {
+      throw new AppError('User not found', 404);
+    }
+
+    const [followersCount, followingCount, isFollowing] = await Promise.all([
+      prisma.follow.count({ where: { followingId: userId } }),
+      prisma.follow.count({ where: { followerId: userId } }),
+      viewerId
+        ? prisma.follow.findUnique({
+            where: {
+              followerId_followingId: {
+                followerId: viewerId,
+                followingId: userId,
+              },
+            },
+          })
+        : Promise.resolve(null),
+    ]);
+
+    res.json({
+      success: true,
+      user: {
+        ...user,
+        followersCount,
+        followingCount,
+      },
+      isFollowing: !!isFollowing,
+    });
+  } catch (error) {
+    logger.error('Get user profile error', { error });
+    if (error instanceof AppError) {
+      throw error;
+    }
+    throw new AppError('Failed to get user profile', 500);
+  }
+});
+
+/**
+ * POST /api/users/:id/follow
+ * Follow a user
+ */
+router.post('/:id/follow', async (req: Request, res: Response) => {
+  try {
+    const targetId = req.params.id;
+    const viewerId = req.user?.userId;
+    if (!viewerId) {
+      throw new AppError('User not authenticated', 401);
+    }
+    if (viewerId === targetId) {
+      throw new AppError('Cannot follow yourself', 400);
+    }
+
+    const target = await prisma.user.findUnique({ where: { id: targetId } });
+    if (!target) {
+      throw new AppError('User not found', 404);
+    }
+
+    await prisma.follow.upsert({
+      where: {
+        followerId_followingId: {
+          followerId: viewerId,
+          followingId: targetId,
+        },
+      },
+      update: {},
+      create: {
+        followerId: viewerId,
+        followingId: targetId,
+      },
+    });
+
+    res.json({ success: true, following: true });
+  } catch (error) {
+    logger.error('Follow user error', { error });
+    if (error instanceof AppError) {
+      throw error;
+    }
+    throw new AppError('Failed to follow user', 500);
+  }
+});
+
+/**
+ * DELETE /api/users/:id/follow
+ * Unfollow a user
+ */
+router.delete('/:id/follow', async (req: Request, res: Response) => {
+  try {
+    const targetId = req.params.id;
+    const viewerId = req.user?.userId;
+    if (!viewerId) {
+      throw new AppError('User not authenticated', 401);
+    }
+    if (viewerId === targetId) {
+      throw new AppError('Cannot unfollow yourself', 400);
+    }
+
+    await prisma.follow.deleteMany({
+      where: {
+        followerId: viewerId,
+        followingId: targetId,
+      },
+    });
+
+    res.json({ success: true, following: false });
+  } catch (error) {
+    logger.error('Unfollow user error', { error });
+    if (error instanceof AppError) {
+      throw error;
+    }
+    throw new AppError('Failed to unfollow user', 500);
+  }
+});
+
 export default router;

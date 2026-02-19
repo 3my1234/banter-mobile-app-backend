@@ -192,9 +192,12 @@ router.get('/', async (req: Request, res: Response) => {
         },
       ];
     } else if (feed === 'following' && userId) {
-      // TODO: Implement following logic when Follow model is added
-      // For now, return empty or all posts
-      // whereClause.userId = { in: followedUserIds };
+      const followedUserIds = await prisma.follow.findMany({
+        where: { followerId: userId },
+        select: { followingId: true },
+      });
+      const ids = followedUserIds.map((f) => f.followingId);
+      whereClause.userId = { in: ids.length ? ids : ['__none__'] };
     }
 
     // Order by logic

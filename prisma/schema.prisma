@@ -36,6 +36,8 @@ model User {
   comments        Comment[]
   reactions       Reaction[]
   payments        Payment[]
+  followers       Follow[] @relation("UserFollowers")
+  following       Follow[] @relation("UserFollowing")
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -124,6 +126,21 @@ model Post {
   @@index([isRoast])
   @@index([repostOfId])
   @@unique([userId, repostOfId])
+}
+
+// Follow model - User following relationships
+model Follow {
+  id           String   @id @default(cuid())
+  followerId   String
+  follower     User     @relation("UserFollowing", fields: [followerId], references: [id], onDelete: Cascade)
+  followingId  String
+  following    User     @relation("UserFollowers", fields: [followingId], references: [id], onDelete: Cascade)
+
+  createdAt    DateTime @default(now())
+
+  @@unique([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
 }
 
 enum PostStatus {
