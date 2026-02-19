@@ -10,6 +10,48 @@ const MOVEMENT_INDEXER_URL = process.env.MOVEMENT_INDEXER_URL || 'https://indexe
 const MOVEMENT_TESTNET_RPC = process.env.MOVEMENT_TESTNET_RPC || 'https://testnet.movementnetwork.xyz/v1';
 const MOVEMENT_USDC_ADDRESS = (process.env.MOVEMENT_USDC_ADDRESS || '').trim().replace(/[>\s]+$/g, '');
 
+async function fetchMovementUSDCBalance(walletAddress: string): Promise<{ balance: string; decimals: number } | null> {
+  if (!MOVEMENT_USDC_ADDRESS) return null;
+  const query = {
+    query: `
+      query GetFungibleAssetBalances($owner: String!, $assetType: String!) {
+        current_fungible_asset_balances(
+          where: {
+            owner_address: { _eq: $owner }
+            asset_type: { _eq: $assetType }
+          }
+        ) {
+          amount
+          metadata {
+            decimals
+          }
+        }
+      }
+    `,
+    variables: {
+      owner: walletAddress.toLowerCase(),
+      assetType: MOVEMENT_USDC_ADDRESS.toLowerCase(),
+    },
+  };
+
+  try {
+    const response = await axios.post(MOVEMENT_INDEXER_URL, query, { timeout: 10000 });
+    if (response.data?.errors) {
+      logger.warn('Movement indexer errors while fetching balance', { errors: response.data.errors });
+      return null;
+    }
+    const balances = response.data?.data?.current_fungible_asset_balances || [];
+    if (!balances.length) return null;
+    return {
+      balance: balances[0].amount?.toString() || '0',
+      decimals: balances[0].metadata?.decimals ?? 6,
+    };
+  } catch (error) {
+    logger.warn('Failed to fetch Movement USDC balance from indexer', { error });
+    return null;
+  }
+}
+
 async function fetchMovementUSDCHistory(walletAddress: string): Promise<any[]> {
   if (!MOVEMENT_USDC_ADDRESS) return [];
   const query = {
@@ -118,6 +160,22 @@ router.get('/balances', async (req: Request, res: Response) => {
             balance: (existingBalance + newBalance).toString(),
             balanceUsd: balance.balanceUsd,
             decimals: balance.decimals,
+          };
+        }
+      }
+    }
+
+    // Indexer fallback for Movement USDC if balance still zero
+    const usdcBalanceData = balances.USDC as { balance: string; balanceUsd: number | null; decimals: number };
+    if (usdcBalanceData && (!usdcBalanceData.balance || usdcBalanceData.balance === '0')) {
+      const movementWallets = user.wallets.filter((w) => w.blockchain === 'MOVEMENT');
+      if (movementWallets.length) {
+        const indexerBalance = await fetchMovementUSDCBalance(movementWallets[0].address);
+        if (indexerBalance && indexerBalance.balance !== '0') {
+          balances.USDC = {
+            balance: indexerBalance.balance,
+            balanceUsd: null,
+            decimals: indexerBalance.decimals,
           };
         }
       }
