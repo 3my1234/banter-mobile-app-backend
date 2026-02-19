@@ -5,6 +5,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 
 // Movement Network Configuration
 const MOVEMENT_TESTNET_RPC = process.env.MOVEMENT_TESTNET_RPC || 'https://testnet.movementnetwork.xyz/v1';
+const MOVEMENT_INDEXER_URL = process.env.MOVEMENT_INDEXER_URL || 'https://indexer.testnet.movementnetwork.xyz/v1/graphql';
 const MOVEMENT_USDC_ADDRESS = process.env.MOVEMENT_USDC_ADDRESS || '0xb89077cfd2a82a0c1450534d49cfd5f2707643155273069bc23a912bcfefdee7';
 const MOVEMENT_ROL_ADDRESS = process.env.MOVEMENT_ROL_ADDRESS || '';
 
@@ -15,6 +16,59 @@ const SOLANA_USDC_MINT = process.env.SOLANA_USDC_MINT || 'EPjFWdd5AufqSSqeM2qN1x
 /**
  * Get Movement wallet balance from blockchain
  */
+const sanitizeAddress = (value: string) => value.trim().replace(/[>\s]+$/g, '');
+
+async function getBalanceFromIndexer(
+  walletAddress: string,
+  tokenAddress: string
+): Promise<{ balance: string; tokenSymbol: string; decimals: number } | null> {
+  try {
+    const owner = walletAddress.toLowerCase();
+    const assetType = tokenAddress.toLowerCase();
+    const query = {
+      query: `
+        query GetFungibleAssetBalances($owner: String!, $assetType: String!) {
+          current_fungible_asset_balances(
+            where: {
+              owner_address: { _eq: $owner }
+              asset_type: { _eq: $assetType }
+            }
+          ) {
+            amount
+            metadata {
+              symbol
+              decimals
+            }
+          }
+        }
+      `,
+      variables: {
+        owner,
+        assetType,
+      },
+    };
+
+    const response = await axios.post(MOVEMENT_INDEXER_URL, query, { timeout: 10000 });
+    if (response.data?.errors) {
+      logger.warn('Indexer errors while fetching balance', { errors: response.data.errors });
+      return null;
+    }
+
+    const balances = response.data?.data?.current_fungible_asset_balances || [];
+    if (!balances.length) return null;
+
+    const balance = balances[0];
+    return {
+      balance: balance.amount?.toString() || '0',
+      tokenSymbol: balance.metadata?.symbol || 'USDC.e',
+      decimals: balance.metadata?.decimals || 6,
+    };
+  } catch (error) {
+    logger.warn('Failed to fetch Movement balance from indexer', { error });
+    return null;
+  }
+}
+
 async function getMovementBalance(
   walletAddress: string,
   tokenAddress?: string
@@ -24,7 +78,7 @@ async function getMovementBalance(
   tokenSymbol: string;
   decimals: number;
 }> {
-  const tokenAddr = tokenAddress || MOVEMENT_USDC_ADDRESS;
+  const tokenAddr = sanitizeAddress(tokenAddress || MOVEMENT_USDC_ADDRESS);
   const isFungibleAsset = !tokenAddr.includes('::');
 
   try {
@@ -42,6 +96,18 @@ async function getMovementBalance(
 
       const balance = response.data[0] || '0';
       const isUSDC = tokenAddr.toLowerCase() === MOVEMENT_USDC_ADDRESS.toLowerCase();
+
+      if (balance.toString() === '0') {
+        const indexerBalance = await getBalanceFromIndexer(walletAddress, tokenAddr);
+        if (indexerBalance && indexerBalance.balance !== '0') {
+          return {
+            balance: indexerBalance.balance,
+            tokenAddress: tokenAddr,
+            tokenSymbol: indexerBalance.tokenSymbol,
+            decimals: indexerBalance.decimals,
+          };
+        }
+      }
 
       return {
         balance: balance.toString(),
@@ -81,8 +147,24 @@ async function getMovementBalance(
       };
     }
   } catch (error) {
-    logger.error(`Failed to get Movement balance for ${walletAddress}`, { error });
-    throw error;
+    logger.warn(`Failed to get Movement balance for ${walletAddress}, using indexer fallback`, { error });
+    if (isFungibleAsset) {
+      const indexerBalance = await getBalanceFromIndexer(walletAddress, tokenAddr);
+      if (indexerBalance) {
+        return {
+          balance: indexerBalance.balance,
+          tokenAddress: tokenAddr,
+          tokenSymbol: indexerBalance.tokenSymbol,
+          decimals: indexerBalance.decimals,
+        };
+      }
+    }
+    return {
+      balance: '0',
+      tokenAddress: tokenAddr,
+      tokenSymbol: isFungibleAsset ? 'USDC.e' : 'MOVE',
+      decimals: isFungibleAsset ? 6 : 8,
+    };
   }
 }
 
