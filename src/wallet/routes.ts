@@ -135,4 +135,60 @@ router.post('/sync/:walletId', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /api/wallet/transactions
+ * Get recent wallet transactions for authenticated user
+ */
+router.get('/transactions', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('User not authenticated', 401);
+    }
+
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 50;
+    const skip = (page - 1) * limit;
+
+    const wallets = await prisma.wallet.findMany({
+      where: { userId },
+      select: { id: true },
+    });
+
+    const walletIds = wallets.map((w) => w.id);
+    if (walletIds.length === 0) {
+      return res.json({ success: true, transactions: [], pagination: { page, limit, total: 0, totalPages: 0 } });
+    }
+
+    const [transactions, total] = await Promise.all([
+      prisma.walletTransaction.findMany({
+        where: { walletId: { in: walletIds } },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      prisma.walletTransaction.count({
+        where: { walletId: { in: walletIds } },
+      }),
+    ]);
+
+    return res.json({
+      success: true,
+      transactions,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    logger.error('Get transactions error', { error });
+    if (error instanceof AppError) {
+      throw error;
+    }
+    throw new AppError('Failed to get transactions', 500);
+  }
+});
+
 export default router;
