@@ -21,6 +21,7 @@ import tagRoutes from './tag/routes';
 import leagueRoutes from './league/routes';
 import userRoutes from './user/routes';
 import paymentRoutes from './payment/routes';
+import mediaRoutes from './media/routes';
 
 dotenv.config();
 
@@ -70,6 +71,7 @@ app.use('/api/images', jwtAuthMiddleware, imageRoutes);
 app.use('/api/comments', jwtAuthMiddleware, commentRoutes);
 app.use('/api/reactions', jwtAuthMiddleware, reactionRoutes);
 app.use('/api/payments', jwtAuthMiddleware, paymentRoutes);
+app.use('/api/media', mediaRoutes);
 app.use('/api/tags', tagRoutes); // Public endpoint
 app.use('/api/leagues', leagueRoutes); // Public endpoint
 app.use('/api/users', jwtAuthMiddleware, userRoutes);
