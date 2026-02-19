@@ -123,7 +123,7 @@ router.get('/balances', async (req: Request, res: Response) => {
       }
     }
 
-    res.json({
+    return res.json({
       success: true,
       balances,
       wallets: user.wallets.map((w: typeof user.wallets[0]) => ({
@@ -136,9 +136,9 @@ router.get('/balances', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Get balances error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to get balances', 500);
+    return res.status(500).json({ success: false, message: 'Failed to get balances' });
   }
 });
 
@@ -186,16 +186,16 @@ router.post('/sync/:walletId', async (req: Request, res: Response) => {
       },
     });
 
-    res.json({
+    return res.json({
       success: true,
       wallet: updatedWallet,
     });
   } catch (error) {
     logger.error('Sync wallet error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to sync wallet', 500);
+    return res.status(500).json({ success: false, message: 'Failed to sync wallet' });
   }
 });
 
@@ -280,9 +280,9 @@ router.get('/transactions', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Get transactions error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to get transactions', 500);
+    return res.status(500).json({ success: false, message: 'Failed to get transactions' });
   }
 });
 
