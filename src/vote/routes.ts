@@ -82,6 +82,8 @@ router.post('/', async (req: Request, res: Response) => {
     let vote: VoteRecord;
     let voteCountChange = { stay: 0, drop: 0 };
 
+    const isPaidVote = !post.isRoast;
+
     if (existingVote) {
       // Update existing vote
       if (existingVote.voteType === voteType) {
@@ -107,31 +109,41 @@ router.post('/', async (req: Request, res: Response) => {
         voteCountChange = { stay: 1, drop: -1 };
       }
     } else {
-      if (user.voteBalance <= 0) {
+      if (isPaidVote && user.voteBalance <= 0) {
         throw new AppError('You need vote credits to vote. Buy more in the Votes tab.', 402);
       }
 
-      // Create new vote and decrement balance
-      vote = await prisma.$transaction(async (tx) => {
-        const created = await tx.vote.create({
+      // Create new vote (decrement balance only for paid votes)
+      if (isPaidVote) {
+        vote = await prisma.$transaction(async (tx) => {
+          const created = await tx.vote.create({
+            data: {
+              postId,
+              userId: user.id,
+              voteType,
+            },
+          });
+
+          await tx.user.update({
+            where: { id: user.id },
+            data: {
+              voteBalance: {
+                decrement: 1,
+              },
+            },
+          });
+
+          return created;
+        });
+      } else {
+        vote = await prisma.vote.create({
           data: {
             postId,
             userId: user.id,
             voteType,
           },
         });
-
-        await tx.user.update({
-          where: { id: user.id },
-          data: {
-            voteBalance: {
-              decrement: 1,
-            },
-          },
-        });
-
-        return created;
-      });
+      }
 
       // Update vote counts
       if (voteType === 'STAY') {
