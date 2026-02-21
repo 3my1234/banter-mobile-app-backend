@@ -25,12 +25,12 @@ router.post('/hls-complete', async (req: Request, res: Response) => {
     const secret = getMediaSecret();
     const provided = req.headers['x-media-secret'];
     if (!secret || provided !== secret) {
-      throw new AppError('Unauthorized', 401);
+      return res.status(401).json({ success: false, message: 'Unauthorized' });
     }
 
     const { s3Key, hlsUrl } = req.body || {};
     if (!s3Key || !hlsUrl) {
-      throw new AppError('s3Key and hlsUrl are required', 400);
+      return res.status(400).json({ success: false, message: 's3Key and hlsUrl are required' });
     }
 
     const key = normalizeKey(s3Key);
@@ -51,13 +51,13 @@ router.post('/hls-complete', async (req: Request, res: Response) => {
       logger.warn('HLS complete: no posts matched key', { key, hlsUrl });
     }
 
-    res.json({ success: true, updated: updated.count });
+    return res.json({ success: true, updated: updated.count });
   } catch (error) {
     logger.error('HLS complete error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to process HLS completion', 500);
+    return res.status(500).json({ success: false, message: 'Failed to process HLS completion' });
   }
 });
 
