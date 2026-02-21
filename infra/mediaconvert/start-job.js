@@ -28,6 +28,7 @@ const getClient = async () => {
 exports.handler = async (event) => {
   const record = event.Records?.[0];
   if (!record) return;
+
   const bucket = record.s3.bucket.name;
   const key = decodeURIComponent(record.s3.object.key.replace(/\+/g, " "));
   if (!key.match(/\.(mp4|mov|m4v)$/i)) return;
