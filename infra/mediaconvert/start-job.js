@@ -73,6 +73,10 @@ exports.handler = async (event) => {
                   Codec: "H_264",
                   H264Settings: {
                     RateControlMode: "QVBR",
+                    MaxBitrate: 3500000,
+                    GopSize: 2,
+                    GopSizeUnits: "SECONDS",
+                    QvbrSettings: { QvbrQualityLevel: 7 },
                     SceneChangeDetect: "TRANSITION_DETECTION",
                   },
                 },
@@ -100,6 +104,10 @@ exports.handler = async (event) => {
                   Codec: "H_264",
                   H264Settings: {
                     RateControlMode: "QVBR",
+                    MaxBitrate: 2500000,
+                    GopSize: 2,
+                    GopSizeUnits: "SECONDS",
+                    QvbrSettings: { QvbrQualityLevel: 7 },
                     SceneChangeDetect: "TRANSITION_DETECTION",
                   },
                 },
@@ -127,6 +135,10 @@ exports.handler = async (event) => {
                   Codec: "H_264",
                   H264Settings: {
                     RateControlMode: "QVBR",
+                    MaxBitrate: 1200000,
+                    GopSize: 2,
+                    GopSizeUnits: "SECONDS",
+                    QvbrSettings: { QvbrQualityLevel: 7 },
                     SceneChangeDetect: "TRANSITION_DETECTION",
                   },
                 },
