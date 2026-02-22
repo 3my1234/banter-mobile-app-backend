@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { Connection } from '@solana/web3.js';
+import axios from 'axios';
 import { prisma } from '../index';
 import { logger } from '../utils/logger';
 import { AppError } from '../utils/errorHandler';
@@ -15,11 +16,22 @@ const SOLANA_USDC_MINT =
   process.env.SOLANA_USDC_MINT || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const SOLANA_USDC_RECEIVER =
   process.env.SOLANA_USDC_RECEIVER || process.env.SOLANA_ADMIN_WALLET || '';
+const MOVEMENT_RPC_URL =
+  process.env.MOVEMENT_TESTNET_RPC || 'https://testnet.movementnetwork.xyz/v1';
+const MOVEMENT_USDC_ADDRESS =
+  (process.env.MOVEMENT_USDC_ADDRESS || '').trim().replace(/[>\s]+$/g, '');
+const MOVEMENT_USDC_RECEIVER =
+  (process.env.MOVEMENT_USDC_RECEIVER ||
+    process.env.MOVEMENT_ADMIN_WALLET ||
+    '').trim();
+const MOVEMENT_USDC_DECIMALS = 6;
 
 const VOTE_BUNDLES = [
-  { id: 'b1', votes: 10, price: 1.99 },
-  { id: 'b2', votes: 100, price: 14.99 },
-  { id: 'b3', votes: 1000, price: 99.99 },
+  { id: 'b1', votes: 1, price: 1 },
+  { id: 'b2', votes: 10, price: 10 },
+  { id: 'b3', votes: 100, price: 100 },
+  { id: 'b4', votes: 1000, price: 1000 },
+  { id: 'b5', votes: 10000, price: 10000 },
 ];
 
 const USDC_DECIMALS = 6;
@@ -30,6 +42,16 @@ const priceToRaw = (price: number) =>
 const findBundle = (bundleId: string) =>
   VOTE_BUNDLES.find((bundle) => bundle.id === bundleId);
 
+const normalizeAddress = (value: string) => value.trim().toLowerCase();
+
+const fetchMovementTransaction = async (txHash: string) => {
+  const response = await axios.get(
+    `${MOVEMENT_RPC_URL}/transactions/by_hash/${txHash}`,
+    { timeout: 15000 }
+  );
+  return response.data;
+};
+
 router.get('/votes/bundles', (_req: Request, res: Response): Response => {
   return res.json({
     success: true,
@@ -37,7 +59,7 @@ router.get('/votes/bundles', (_req: Request, res: Response): Response => {
       id: bundle.id,
       votes: bundle.votes,
       price: bundle.price,
-      currency: 'USDC',
+      currency: 'USD',
     })),
     decimals: USDC_DECIMALS,
     mint: SOLANA_USDC_MINT,
@@ -197,6 +219,198 @@ router.post('/flutterwave/votes/verify', async (req: Request, res: Response): Pr
     return res.json({ success: true, payment: updated });
   } catch (error) {
     logger.error('Verify Flutterwave vote payment error', { error });
+    if (error instanceof AppError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    return res.status(500).json({ success: false, message: 'Failed to verify payment' });
+  }
+});
+
+router.post('/movement/votes/create', async (req: Request, res: Response): Promise<Response | void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('User not authenticated', 401);
+    }
+
+    if (!MOVEMENT_USDC_ADDRESS || !MOVEMENT_USDC_RECEIVER) {
+      throw new AppError('Movement payment receiver not configured', 500);
+    }
+
+    const { bundleId } = req.body || {};
+    if (!bundleId || typeof bundleId !== 'string') {
+      throw new AppError('Bundle ID is required', 400);
+    }
+
+    const bundle = findBundle(bundleId);
+    if (!bundle) {
+      throw new AppError('Invalid bundle', 400);
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user || !user.movementAddress) {
+      throw new AppError('Movement wallet not found', 400);
+    }
+
+    const rawAmount = Math.round(bundle.price * 10 ** MOVEMENT_USDC_DECIMALS).toString();
+
+    const payment = await prisma.payment.create({
+      data: {
+        userId,
+        paymentType: 'VOTE_PURCHASE',
+        chain: 'MOVEMENT',
+        amount: bundle.price,
+        amountRaw: rawAmount,
+        currency: 'USDC',
+        tokenAddress: MOVEMENT_USDC_ADDRESS,
+        fromAddress: user.movementAddress,
+        toAddress: MOVEMENT_USDC_RECEIVER,
+        status: 'PENDING',
+        metadata: {
+          bundleId: bundle.id,
+          votes: bundle.votes,
+        },
+      },
+    });
+
+    return res.json({
+      success: true,
+      paymentId: payment.id,
+      chain: 'MOVEMENT',
+      fromAddress: payment.fromAddress,
+      toAddress: payment.toAddress,
+      amount: payment.amount,
+      amountRaw: payment.amountRaw,
+      tokenAddress: payment.tokenAddress,
+      decimals: MOVEMENT_USDC_DECIMALS,
+      message: 'Send Movement USDC.e to complete this purchase.',
+    });
+  } catch (error) {
+    logger.error('Create Movement vote payment error', { error });
+    if (error instanceof AppError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    return res.status(500).json({ success: false, message: 'Failed to create payment' });
+  }
+});
+
+router.post('/movement/votes/verify', async (req: Request, res: Response): Promise<Response | void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('User not authenticated', 401);
+    }
+
+    const { paymentId, txHash } = req.body || {};
+    if (!paymentId || !txHash) {
+      throw new AppError('paymentId and txHash are required', 400);
+    }
+
+    const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
+    if (!payment) {
+      throw new AppError('Payment not found', 404);
+    }
+
+    if (payment.userId !== userId) {
+      throw new AppError('Not authorized to verify this payment', 403);
+    }
+
+    if (payment.status === 'COMPLETED') {
+      return res.json({ success: true, payment, message: 'Payment already verified' });
+    }
+
+    const tx = await fetchMovementTransaction(txHash);
+    if (!tx?.success) {
+      throw new AppError('Transaction not confirmed', 400);
+    }
+
+    const sender = normalizeAddress(tx.sender || '');
+    if (sender !== normalizeAddress(payment.fromAddress)) {
+      throw new AppError('Transaction sender mismatch', 400);
+    }
+
+    const payload = tx.payload || {};
+    const typeArgs = (payload.type_arguments || payload.typeArguments || []) as string[];
+    const args = (payload.arguments || payload.functionArguments || []) as string[];
+
+    const receiverArg = args[0];
+    const amountArg = args[1];
+
+    if (!receiverArg || normalizeAddress(receiverArg) !== normalizeAddress(payment.toAddress)) {
+      throw new AppError('Transaction receiver mismatch', 400);
+    }
+
+    if (typeArgs.length && normalizeAddress(typeArgs[0]) !== normalizeAddress(payment.tokenAddress)) {
+      throw new AppError('Token mismatch', 400);
+    }
+
+    const paid = BigInt(amountArg || '0');
+    const required = BigInt(payment.amountRaw);
+    if (paid < required) {
+      throw new AppError('Payment amount mismatch', 400);
+    }
+
+    const updated = await prisma.$transaction(async (txDb) => {
+      const updatedPayment = await txDb.payment.update({
+        where: { id: paymentId },
+        data: {
+          status: 'COMPLETED',
+          txHash,
+          completedAt: new Date(),
+          metadata: {
+            ...(payment.metadata as any),
+            movement: tx,
+          },
+        },
+      });
+
+      const bundleVotes = Number((payment.metadata as any)?.votes || 0);
+      if (bundleVotes > 0) {
+        await txDb.user.update({
+          where: { id: userId },
+          data: {
+            voteBalance: {
+              increment: bundleVotes,
+            },
+          },
+        });
+      }
+
+      const wallet = await txDb.wallet.findFirst({
+        where: {
+          userId,
+          blockchain: 'MOVEMENT',
+        },
+      });
+
+      if (wallet) {
+        await txDb.walletTransaction.create({
+          data: {
+            walletId: wallet.id,
+            txHash,
+            txType: 'PAYMENT',
+            amount: payment.amountRaw,
+            tokenAddress: payment.tokenAddress,
+            tokenSymbol: 'USDC.e',
+            fromAddress: payment.fromAddress,
+            toAddress: payment.toAddress,
+            status: 'COMPLETED',
+            description: 'Vote bundle purchase',
+            paymentId: payment.id,
+            metadata: {
+              bundleId: (payment.metadata as any)?.bundleId,
+              votes: (payment.metadata as any)?.votes,
+            },
+          },
+        });
+      }
+
+      return updatedPayment;
+    });
+
+    return res.json({ success: true, payment: updated });
+  } catch (error) {
+    logger.error('Verify Movement vote payment error', { error });
     if (error instanceof AppError) {
       return res.status(error.statusCode).json({ success: false, message: error.message });
     }
