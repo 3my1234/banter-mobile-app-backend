@@ -669,24 +669,21 @@ router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => 
 
     if (post.status !== 'ACTIVE') {
       await deletePostMedia(post.mediaUrl);
+      await prisma.post.delete({ where: { id: postId } });
       return res.json({ success: true });
     }
 
     await deletePostMedia(post.mediaUrl);
 
     const updated = await prisma.$transaction(async (tx) => {
-      const hidden = await tx.post.update({
+      const deleted = await tx.post.delete({
         where: { id: postId },
-        data: {
-          status: 'HIDDEN',
-          hiddenAt: new Date(),
-        },
       });
 
       let repostCount: number | null = null;
-      if (hidden.repostOfId) {
+      if (deleted.repostOfId) {
         const original = await tx.post.update({
-          where: { id: hidden.repostOfId },
+          where: { id: deleted.repostOfId },
           data: {
             repostCount: { decrement: 1 },
           },
@@ -694,7 +691,7 @@ router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => 
         repostCount = original.repostCount;
       }
 
-      return { hidden, repostCount };
+      return { deleted, repostCount };
     });
 
     try {
