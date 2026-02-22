@@ -669,13 +669,24 @@ router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => 
 
     if (post.status !== 'ACTIVE') {
       await deletePostMedia(post.mediaUrl);
-      await prisma.post.delete({ where: { id: postId } });
+      await prisma.$transaction(async (tx) => {
+        await tx.comment.deleteMany({ where: { postId } });
+        await tx.reaction.deleteMany({ where: { postId } });
+        await tx.vote.deleteMany({ where: { postId } });
+        await tx.postTag.deleteMany({ where: { postId } });
+        await tx.post.delete({ where: { id: postId } });
+      });
       return res.json({ success: true });
     }
 
     await deletePostMedia(post.mediaUrl);
 
     const updated = await prisma.$transaction(async (tx) => {
+      await tx.comment.deleteMany({ where: { postId } });
+      await tx.reaction.deleteMany({ where: { postId } });
+      await tx.vote.deleteMany({ where: { postId } });
+      await tx.postTag.deleteMany({ where: { postId } });
+
       const deleted = await tx.post.delete({
         where: { id: postId },
       });
