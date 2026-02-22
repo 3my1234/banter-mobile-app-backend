@@ -341,6 +341,7 @@ enum PaymentStatus {
 enum PaymentChain {
   SOLANA
   MOVEMENT
+  FLUTTERWAVE
 }
 
 enum PaymentType {
