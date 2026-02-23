@@ -147,7 +147,11 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
     if (error instanceof AppError) {
       return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    return res.status(500).json({ success: false, message: 'Failed to create payment' });
+    const message =
+      (error as any)?.response?.data?.message ||
+      (error as any)?.message ||
+      'Failed to create payment';
+    return res.status(500).json({ success: false, message });
   }
 });
 
