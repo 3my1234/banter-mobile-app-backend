@@ -330,17 +330,34 @@ router.post('/movement/votes/verify', async (req: Request, res: Response): Promi
     }
 
     const payload = tx.payload || {};
+    const func = (payload.function || payload.entry_function_id || '').toString();
     const typeArgs = (payload.type_arguments || payload.typeArguments || []) as string[];
     const args = (payload.arguments || payload.functionArguments || []) as string[];
 
-    const receiverArg = args[0];
-    const amountArg = args[1];
+    let receiverArg = '';
+    let amountArg = '';
+    let tokenArg = '';
+
+    if (func.includes('primary_fungible_store::transfer')) {
+      // args: [metadata_address, recipient, amount]
+      tokenArg = args[0] || '';
+      receiverArg = args[1] || '';
+      amountArg = args[2] || '';
+    } else {
+      // coin::transfer args: [recipient, amount]
+      receiverArg = args[0] || '';
+      amountArg = args[1] || '';
+      tokenArg = typeArgs[0] || '';
+    }
 
     if (!receiverArg || normalizeAddress(receiverArg) !== normalizeAddress(payment.toAddress)) {
       throw new AppError('Transaction receiver mismatch', 400);
     }
 
-    if (typeArgs.length && normalizeAddress(typeArgs[0]) !== normalizeAddress(payment.tokenAddress)) {
+    if (
+      tokenArg &&
+      normalizeAddress(tokenArg) !== normalizeAddress(payment.tokenAddress)
+    ) {
       throw new AppError('Token mismatch', 400);
     }
 
