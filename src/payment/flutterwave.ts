@@ -5,6 +5,7 @@ export type FlutterwavePaymentData = {
   amount: number;
   currency: string;
   tx_ref: string;
+  payment_options?: string;
   customer: {
     email: string;
     name: string;
@@ -73,4 +74,3 @@ export async function verifyFlutterwavePayment(
   });
   return response.data as FlutterwaveVerificationResponse;
 }
-

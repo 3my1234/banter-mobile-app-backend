@@ -157,6 +157,9 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
           process.env.FRONTEND_URL ||
           'banterv3://payments/flutterwave';
 
+    const phone = user.phone?.trim() || '';
+    const logo = process.env.FLUTTERWAVE_LOGO_URL || process.env.MEDIA_CDN_BASE || '';
+
     const initResult = await initializeFlutterwavePayment({
       email: user.email,
       amount: bundle.price,
@@ -165,12 +168,16 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
       customer: {
         email: user.email,
         name: user.displayName || user.username || 'Banter User',
+        ...(phone ? { phonenumber: phone } : { phonenumber: '0000000000' }),
       },
       customizations: {
         title: 'Banter Vote Purchase',
         description: `${bundle.votes} votes`,
+        ...(logo ? { logo } : {}),
       },
       redirect_url: redirect,
+      // Ensure card checkout is allowed
+      payment_options: 'card',
     });
 
     return res.json({
