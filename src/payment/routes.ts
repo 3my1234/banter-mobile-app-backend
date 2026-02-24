@@ -18,6 +18,8 @@ const SOLANA_USDC_RECEIVER =
   process.env.SOLANA_USDC_RECEIVER || process.env.SOLANA_ADMIN_WALLET || '';
 const MOVEMENT_RPC_URL =
   process.env.MOVEMENT_TESTNET_RPC || 'https://testnet.movementnetwork.xyz/v1';
+const MOVEMENT_RPC_FALLBACK =
+  process.env.MOVEMENT_TESTNET_RPC_FALLBACK || '';
 const MOVEMENT_USDC_ADDRESS =
   (process.env.MOVEMENT_USDC_ADDRESS || '').trim().replace(/[>\s]+$/g, '');
 const MOVEMENT_USDC_RECEIVER =
@@ -44,12 +46,35 @@ const findBundle = (bundleId: string) =>
 
 const normalizeAddress = (value: string) => value.trim().toLowerCase();
 
+const getMovementRpcUrls = () => {
+  const urls = [MOVEMENT_RPC_URL, MOVEMENT_RPC_FALLBACK]
+    .map((u) => (u || '').trim())
+    .filter((u) => u.length > 0);
+  return Array.from(new Set(urls));
+};
+
 const fetchMovementTransaction = async (txHash: string) => {
-  const response = await axios.get(
-    `${MOVEMENT_RPC_URL}/transactions/by_hash/${txHash}`,
-    { timeout: 15000 }
-  );
-  return response.data;
+  const rpcUrls = getMovementRpcUrls();
+  let lastError: unknown = null;
+
+  for (const rpcUrl of rpcUrls) {
+    try {
+      const response = await axios.get(
+        `${rpcUrl}/transactions/by_hash/${txHash}`,
+        { timeout: 15000 }
+      );
+      return response.data;
+    } catch (error) {
+      lastError = error;
+      logger.warn('Movement tx fetch failed on RPC', { rpcUrl, txHash });
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new Error('No Movement RPC configured');
 };
 
 router.get('/flutterwave/debug', async (_req: Request, res: Response): Promise<Response> => {

@@ -8,7 +8,41 @@ import axios from 'axios';
 const router = Router();
 const MOVEMENT_INDEXER_URL = process.env.MOVEMENT_INDEXER_URL || 'https://indexer.testnet.movementnetwork.xyz/v1/graphql';
 const MOVEMENT_TESTNET_RPC = process.env.MOVEMENT_TESTNET_RPC || 'https://testnet.movementnetwork.xyz/v1';
+const MOVEMENT_TESTNET_RPC_FALLBACK = process.env.MOVEMENT_TESTNET_RPC_FALLBACK || '';
+const MOVEMENT_RPC_URL = process.env.MOVEMENT_RPC_URL || '';
 const MOVEMENT_USDC_ADDRESS = (process.env.MOVEMENT_USDC_ADDRESS || '').trim().replace(/[>\s]+$/g, '');
+const MOVEMENT_NATIVE_TOKEN = '0x1::aptos_coin::AptosCoin';
+
+const getMovementRpcUrls = () => {
+  const urls = [MOVEMENT_RPC_URL, MOVEMENT_TESTNET_RPC, MOVEMENT_TESTNET_RPC_FALLBACK]
+    .map((u) => (u || '').trim())
+    .filter((u) => u.length > 0);
+  return Array.from(new Set(urls));
+};
+
+async function fetchMovementTxByVersion(version: string | number) {
+  const rpcUrls = getMovementRpcUrls();
+  let lastError: unknown = null;
+
+  for (const rpcUrl of rpcUrls) {
+    try {
+      const txRes = await axios.get(
+        `${rpcUrl}/transactions/by_version/${version}`,
+        { timeout: 10000 }
+      );
+      if (txRes.data) return txRes.data;
+    } catch (error) {
+      lastError = error;
+      logger.warn('Movement tx version fetch failed on RPC', { rpcUrl, version });
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  return null;
+}
 
 async function fetchMovementUSDCBalance(walletAddress: string): Promise<{ balance: string; decimals: number } | null> {
   if (!MOVEMENT_USDC_ADDRESS) return null;
@@ -90,14 +124,12 @@ async function fetchMovementUSDCHistory(walletAddress: string): Promise<any[]> {
 
     for (const activity of activities) {
       try {
-        const txRes = await axios.get(
-          `${MOVEMENT_TESTNET_RPC}/transactions/by_version/${activity.transaction_version}`
-        );
-        if (txRes.data?.hash) {
+        const txRes = await fetchMovementTxByVersion(activity.transaction_version);
+        if (txRes?.hash) {
           detailed.push({
             ...activity,
-            transaction_hash: txRes.data.hash,
-            requestor_address: txRes.data.sender || walletAddress,
+            transaction_hash: txRes.hash,
+            requestor_address: txRes.sender || walletAddress,
           });
         }
       } catch {
@@ -108,6 +140,64 @@ async function fetchMovementUSDCHistory(walletAddress: string): Promise<any[]> {
     return detailed;
   } catch (error) {
     logger.warn('Failed to fetch Movement USDC history', { error });
+    return [];
+  }
+}
+
+async function fetchMovementMoveHistory(walletAddress: string): Promise<any[]> {
+  const query = {
+    query: `
+      query GetUserMOVEHistory($owner: String!, $coinType: String!) {
+        coin_activities(
+          where: {
+            owner_address: { _eq: $owner }
+            coin_type: { _eq: $coinType }
+          }
+          order_by: { transaction_timestamp: desc }
+          limit: 25
+        ) {
+          transaction_version
+          amount
+          activity_type
+          transaction_timestamp
+        }
+      }
+    `,
+    variables: {
+      owner: walletAddress.toLowerCase(),
+      coinType: MOVEMENT_NATIVE_TOKEN,
+    },
+  };
+
+  try {
+    const response = await axios.post(MOVEMENT_INDEXER_URL, query, { timeout: 10000 });
+    if (response.data?.errors) {
+      logger.warn('Movement indexer MOVE errors', { errors: response.data.errors });
+      return [];
+    }
+
+    const activities = response.data?.data?.coin_activities || [];
+    const detailed: any[] = [];
+
+    for (const activity of activities) {
+      try {
+        const txRes = await fetchMovementTxByVersion(activity.transaction_version);
+        if (txRes?.hash) {
+          detailed.push({
+            ...activity,
+            transaction_hash: txRes.hash,
+            requestor_address: txRes.sender || walletAddress,
+            type: activity.activity_type,
+          });
+        }
+      } catch {
+        // ignore individual failures
+      }
+    }
+
+    return detailed;
+  } catch (error) {
+    logger.warn('Failed to fetch Movement MOVE history', { error });
     return [];
   }
 }
@@ -283,6 +373,7 @@ router.get('/transactions', async (req: Request, res: Response) => {
     }
 
     const includeIndexer = req.query.includeIndexer === '1';
+    const syncIndexer = req.query.sync === '1';
 
     const [transactions, total] = await Promise.all([
       prisma.walletTransaction.findMany({
@@ -303,9 +394,11 @@ router.get('/transactions', async (req: Request, res: Response) => {
       });
       for (const wallet of movementWallets) {
         const activities = await fetchMovementUSDCHistory(wallet.address);
+        const moveActivities = await fetchMovementMoveHistory(wallet.address);
         indexerTransactions = indexerTransactions.concat(
           activities.map((activity: any) => ({
             id: `idx-${activity.transaction_version}`,
+            walletId: wallet.id,
             txHash: activity.transaction_hash || `v-${activity.transaction_version}`,
             txType: (activity.type || 'TRANSFER').toUpperCase(),
             amount: activity.amount?.toString() || '0',
@@ -322,6 +415,52 @@ router.get('/transactions', async (req: Request, res: Response) => {
             source: 'indexer',
           }))
         );
+        indexerTransactions = indexerTransactions.concat(
+          moveActivities.map((activity: any) => ({
+            id: `idx-move-${activity.transaction_version}`,
+            walletId: wallet.id,
+            txHash: activity.transaction_hash || `v-${activity.transaction_version}`,
+            txType: (activity.type || 'TRANSFER').toUpperCase(),
+            amount: activity.amount?.toString() || '0',
+            tokenAddress: MOVEMENT_NATIVE_TOKEN,
+            tokenSymbol: 'MOVE',
+            fromAddress: activity.type?.toUpperCase().includes('DEPOSIT')
+              ? activity.requestor_address
+              : wallet.address,
+            toAddress: activity.type?.toUpperCase().includes('DEPOSIT')
+              ? wallet.address
+              : activity.requestor_address,
+            status: 'COMPLETED',
+            createdAt: activity.transaction_timestamp,
+            source: 'indexer',
+          }))
+        );
+      }
+    }
+
+    if (syncIndexer && indexerTransactions.length > 0) {
+      for (const txItem of indexerTransactions) {
+        try {
+          await prisma.walletTransaction.upsert({
+            where: { txHash: txItem.txHash },
+            create: {
+              walletId: txItem.walletId,
+              txHash: txItem.txHash,
+              txType: txItem.txType,
+              amount: txItem.amount,
+              tokenAddress: txItem.tokenAddress,
+              tokenSymbol: txItem.tokenSymbol,
+              fromAddress: txItem.fromAddress,
+              toAddress: txItem.toAddress,
+              status: txItem.status,
+              description: 'Indexed Movement transaction',
+              metadata: { source: 'indexer' },
+            },
+            update: {},
+          });
+        } catch {
+          // ignore duplicates or invalid
+        }
       }
     }
 

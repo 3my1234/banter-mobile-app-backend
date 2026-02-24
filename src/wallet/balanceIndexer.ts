@@ -5,6 +5,8 @@ import { Connection, PublicKey } from '@solana/web3.js';
 
 // Movement Network Configuration
 const MOVEMENT_TESTNET_RPC = process.env.MOVEMENT_TESTNET_RPC || 'https://testnet.movementnetwork.xyz/v1';
+const MOVEMENT_TESTNET_RPC_FALLBACK = process.env.MOVEMENT_TESTNET_RPC_FALLBACK || '';
+const MOVEMENT_RPC_URL = process.env.MOVEMENT_RPC_URL || '';
 const MOVEMENT_INDEXER_URL = process.env.MOVEMENT_INDEXER_URL || 'https://indexer.testnet.movementnetwork.xyz/v1/graphql';
 const MOVEMENT_USDC_ADDRESS = process.env.MOVEMENT_USDC_ADDRESS || '0xb89077cfd2a82a0c1450534d49cfd5f2707643155273069bc23a912bcfefdee7';
 const MOVEMENT_ROL_ADDRESS = process.env.MOVEMENT_ROL_ADDRESS || '';
@@ -69,6 +71,13 @@ async function getBalanceFromIndexer(
   }
 }
 
+const getMovementRpcUrls = () => {
+  const urls = [MOVEMENT_RPC_URL, MOVEMENT_TESTNET_RPC, MOVEMENT_TESTNET_RPC_FALLBACK]
+    .map((u) => (u || '').trim())
+    .filter((u) => u.length > 0);
+  return Array.from(new Set(urls));
+};
+
 async function getMovementBalance(
   walletAddress: string,
   tokenAddress?: string
@@ -82,70 +91,92 @@ async function getMovementBalance(
   const isFungibleAsset = !tokenAddr.includes('::');
 
   try {
+    const rpcUrls = getMovementRpcUrls();
+    let lastError: unknown = null;
+
     if (isFungibleAsset) {
       // Fungible Asset (USDC.e)
-      const response = await axios.post(
-        `${MOVEMENT_TESTNET_RPC}/view`,
-        {
-          function: '0x1::primary_fungible_store::balance',
-          type_arguments: ['0x1::fungible_asset::Metadata'],
-          arguments: [walletAddress, tokenAddr],
-        },
-        { timeout: 10000 }
-      );
+      for (const rpcUrl of rpcUrls) {
+        try {
+          const response = await axios.post(
+            `${rpcUrl}/view`,
+            {
+              function: '0x1::primary_fungible_store::balance',
+              type_arguments: ['0x1::fungible_asset::Metadata'],
+              arguments: [walletAddress, tokenAddr],
+            },
+            { timeout: 10000 }
+          );
 
-      const balance = response.data[0] || '0';
-      const isUSDC = tokenAddr.toLowerCase() === MOVEMENT_USDC_ADDRESS.toLowerCase();
+          const balance = response.data[0] || '0';
+          const isUSDC = tokenAddr.toLowerCase() === MOVEMENT_USDC_ADDRESS.toLowerCase();
 
-      if (balance.toString() === '0') {
-        const indexerBalance = await getBalanceFromIndexer(walletAddress, tokenAddr);
-        if (indexerBalance && indexerBalance.balance !== '0') {
+          if (balance.toString() === '0') {
+            const indexerBalance = await getBalanceFromIndexer(walletAddress, tokenAddr);
+            if (indexerBalance && indexerBalance.balance !== '0') {
+              return {
+                balance: indexerBalance.balance,
+                tokenAddress: tokenAddr,
+                tokenSymbol: indexerBalance.tokenSymbol,
+                decimals: indexerBalance.decimals,
+              };
+            }
+          }
+
           return {
-            balance: indexerBalance.balance,
+            balance: balance.toString(),
             tokenAddress: tokenAddr,
-            tokenSymbol: indexerBalance.tokenSymbol,
-            decimals: indexerBalance.decimals,
+            tokenSymbol: isUSDC ? 'USDC.e' : 'FA',
+            decimals: isUSDC ? 6 : 8,
           };
+        } catch (error) {
+          lastError = error;
+          logger.warn('Movement balance view failed on RPC', { rpcUrl, walletAddress });
         }
       }
-
-      return {
-        balance: balance.toString(),
-        tokenAddress: tokenAddr,
-        tokenSymbol: isUSDC ? 'USDC.e' : 'FA',
-        decimals: isUSDC ? 6 : 8,
-      };
     } else {
       // Native MOVE token
-      const response = await axios.get(
-        `${MOVEMENT_TESTNET_RPC}/accounts/${walletAddress}/resources`,
-        { timeout: 10000 }
-      );
+      for (const rpcUrl of rpcUrls) {
+        try {
+          const response = await axios.get(
+            `${rpcUrl}/accounts/${walletAddress}/resources`,
+            { timeout: 10000 }
+          );
 
-      const resources = response.data || [];
-      const coinStore = resources.find(
-        (r: { type?: string }) =>
-          r.type?.includes('coin::CoinStore') &&
-          (tokenAddr === '0x1::aptos_coin::AptosCoin' || r.type?.includes(tokenAddr))
-      );
+          const resources = response.data || [];
+          const coinStore = resources.find(
+            (r: { type?: string }) =>
+              r.type?.includes('coin::CoinStore') &&
+              (tokenAddr === '0x1::aptos_coin::AptosCoin' || r.type?.includes(tokenAddr))
+          );
 
-      if (!coinStore) {
-        return {
-          balance: '0',
-          tokenAddress: tokenAddr,
-          tokenSymbol: 'MOVE',
-          decimals: 8,
-        };
+          if (!coinStore) {
+            return {
+              balance: '0',
+              tokenAddress: tokenAddr,
+              tokenSymbol: 'MOVE',
+              decimals: 8,
+            };
+          }
+
+          const balanceValue = coinStore.data?.coin?.value || '0';
+          return {
+            balance: balanceValue.toString(),
+            tokenAddress: tokenAddr,
+            tokenSymbol: 'MOVE',
+            decimals: 8,
+          };
+        } catch (error) {
+          lastError = error;
+          logger.warn('Movement balance resources failed on RPC', { rpcUrl, walletAddress });
+        }
       }
-
-      const balanceValue = coinStore.data?.coin?.value || '0';
-      return {
-        balance: balanceValue.toString(),
-        tokenAddress: tokenAddr,
-        tokenSymbol: 'MOVE',
-        decimals: 8,
-      };
     }
+
+    if (lastError) {
+      throw lastError;
+    }
+
   } catch (error) {
     logger.warn(`Failed to get Movement balance for ${walletAddress}, using indexer fallback`, { error });
     if (isFungibleAsset) {
