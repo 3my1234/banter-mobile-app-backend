@@ -398,6 +398,7 @@ router.get('/transactions', async (req: Request, res: Response) => {
         const toIndexerRow = (activity: any, tokenAddress: string, tokenSymbol: string) => {
           const type = (activity.type || 'TRANSFER').toUpperCase();
           const isDeposit = type.includes('DEPOSIT');
+          const decimals = tokenSymbol === 'MOVE' ? 8 : 6;
           return {
             id: `idx-${activity.transaction_version}`,
             walletId: wallet.id,
@@ -411,6 +412,7 @@ router.get('/transactions', async (req: Request, res: Response) => {
             status: 'COMPLETED',
             createdAt: activity.transaction_timestamp,
             source: 'indexer',
+            metadata: { decimals },
           };
         };
 
@@ -466,7 +468,7 @@ router.get('/transactions', async (req: Request, res: Response) => {
               toAddress: txItem.toAddress,
               status: txItem.status,
               description: 'Indexed Movement transaction',
-              metadata: { source: 'indexer' },
+              metadata: { source: 'indexer', decimals: txItem.metadata?.decimals },
             },
             update: {},
           });
