@@ -395,46 +395,58 @@ router.get('/transactions', async (req: Request, res: Response) => {
       for (const wallet of movementWallets) {
         const activities = await fetchMovementUSDCHistory(wallet.address);
         const moveActivities = await fetchMovementMoveHistory(wallet.address);
-        indexerTransactions = indexerTransactions.concat(
-          activities.map((activity: any) => ({
+        const toIndexerRow = (activity: any, tokenAddress: string, tokenSymbol: string) => {
+          const type = (activity.type || 'TRANSFER').toUpperCase();
+          const isDeposit = type.includes('DEPOSIT');
+          return {
             id: `idx-${activity.transaction_version}`,
             walletId: wallet.id,
             txHash: activity.transaction_hash || `v-${activity.transaction_version}`,
-            txType: (activity.type || 'TRANSFER').toUpperCase(),
+            txType: type,
             amount: activity.amount?.toString() || '0',
-            tokenAddress: MOVEMENT_USDC_ADDRESS,
-            tokenSymbol: 'USDC.e',
-            fromAddress: activity.type?.toUpperCase().includes('DEPOSIT')
-              ? activity.requestor_address
-              : wallet.address,
-            toAddress: activity.type?.toUpperCase().includes('DEPOSIT')
-              ? wallet.address
-              : activity.requestor_address,
+            tokenAddress,
+            tokenSymbol,
+            fromAddress: isDeposit ? activity.requestor_address : wallet.address,
+            toAddress: isDeposit ? wallet.address : activity.requestor_address,
             status: 'COMPLETED',
             createdAt: activity.transaction_timestamp,
             source: 'indexer',
-          }))
-        );
-        indexerTransactions = indexerTransactions.concat(
-          moveActivities.map((activity: any) => ({
-            id: `idx-move-${activity.transaction_version}`,
-            walletId: wallet.id,
-            txHash: activity.transaction_hash || `v-${activity.transaction_version}`,
-            txType: (activity.type || 'TRANSFER').toUpperCase(),
-            amount: activity.amount?.toString() || '0',
-            tokenAddress: MOVEMENT_NATIVE_TOKEN,
-            tokenSymbol: 'MOVE',
-            fromAddress: activity.type?.toUpperCase().includes('DEPOSIT')
-              ? activity.requestor_address
-              : wallet.address,
-            toAddress: activity.type?.toUpperCase().includes('DEPOSIT')
-              ? wallet.address
-              : activity.requestor_address,
-            status: 'COMPLETED',
-            createdAt: activity.transaction_timestamp,
-            source: 'indexer',
-          }))
-        );
+          };
+        };
+
+        const normalized = [
+          ...activities.map((activity: any) =>
+            toIndexerRow(activity, MOVEMENT_USDC_ADDRESS, 'USDC.e')
+          ),
+          ...moveActivities.map((activity: any) =>
+            toIndexerRow(activity, MOVEMENT_NATIVE_TOKEN, 'MOVE')
+          ),
+        ];
+
+        // De-duplicate by txHash; collapse DEPOSIT+WITHDRAW into TRANSFER
+        const byHash = new Map<string, any>();
+        for (const item of normalized) {
+          const key = item.txHash;
+          const existing = byHash.get(key);
+          if (!existing) {
+            byHash.set(key, item);
+            continue;
+          }
+
+          const existingType = (existing.txType || '').toUpperCase();
+          const nextType = (item.txType || '').toUpperCase();
+          const isOpposite =
+            (existingType.includes('DEPOSIT') && nextType.includes('WITHDRAW')) ||
+            (existingType.includes('WITHDRAW') && nextType.includes('DEPOSIT'));
+
+          if (isOpposite) {
+            existing.txType = 'TRANSFER';
+            existing.fromAddress = item.fromAddress || existing.fromAddress;
+            existing.toAddress = item.toAddress || existing.toAddress;
+          }
+        }
+
+        indexerTransactions = indexerTransactions.concat(Array.from(byHash.values()));
       }
     }
 
