@@ -52,6 +52,45 @@ const fetchMovementTransaction = async (txHash: string) => {
   return response.data;
 };
 
+router.get('/flutterwave/debug', async (_req: Request, res: Response): Promise<Response> => {
+  try {
+    const secret = process.env.FLUTTERWAVE_SECRET_KEY;
+    if (!secret) {
+      return res.status(500).json({
+        ok: false,
+        message: 'FLUTTERWAVE_SECRET_KEY is not set on the server',
+      });
+    }
+
+    const response = await axios.get('https://api.flutterwave.com/v3/transactions', {
+      headers: {
+        Authorization: `Bearer ${secret}`,
+      },
+      params: {
+        from: '2020-01-01',
+        to: '2020-01-02',
+      },
+      timeout: 15000,
+    });
+
+    return res.json({
+      ok: true,
+      status: response.status,
+      message: 'Flutterwave credentials are accepted',
+    });
+  } catch (error: any) {
+    const message =
+      error?.response?.data?.message ||
+      error?.response?.data ||
+      error?.message ||
+      'Flutterwave debug failed';
+    return res.status(500).json({
+      ok: false,
+      message,
+    });
+  }
+});
+
 router.get('/votes/bundles', (_req: Request, res: Response): Response => {
   return res.json({
     success: true,
