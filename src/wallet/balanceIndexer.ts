@@ -92,6 +92,9 @@ async function getMovementBalance(
 
   try {
     const rpcUrls = getMovementRpcUrls();
+    if (rpcUrls.length === 0) {
+      throw new Error('No Movement RPC configured');
+    }
     let lastError: unknown = null;
 
     if (isFungibleAsset) {
@@ -197,6 +200,13 @@ async function getMovementBalance(
       decimals: isFungibleAsset ? 6 : 8,
     };
   }
+
+  return {
+    balance: '0',
+    tokenAddress: tokenAddr,
+    tokenSymbol: isFungibleAsset ? 'USDC.e' : 'MOVE',
+    decimals: isFungibleAsset ? 6 : 8,
+  };
 }
 
 /**
