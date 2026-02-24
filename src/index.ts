@@ -70,6 +70,9 @@ app.use('/api/votes', jwtAuthMiddleware, voteRoutes);
 app.use('/api/images', jwtAuthMiddleware, imageRoutes);
 app.use('/api/comments', jwtAuthMiddleware, commentRoutes);
 app.use('/api/reactions', jwtAuthMiddleware, reactionRoutes);
+// Public health/debug endpoints for payments (no auth)
+app.use('/api/public/payments', paymentRoutes);
+// Authenticated payments
 app.use('/api/payments', jwtAuthMiddleware, paymentRoutes);
 app.use('/api/media', mediaRoutes);
 app.use('/api/tags', tagRoutes); // Public endpoint
