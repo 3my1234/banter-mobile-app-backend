@@ -377,13 +377,25 @@ router.get('/transactions', async (req: Request, res: Response) => {
 
     const [transactions, total] = await Promise.all([
       prisma.walletTransaction.findMany({
-        where: { walletId: { in: walletIds } },
+        where: {
+          walletId: { in: walletIds },
+          OR: [
+            { paymentId: null },
+            { payment: { status: 'COMPLETED' } },
+          ],
+        },
         orderBy: { createdAt: 'desc' },
         skip,
         take: limit,
       }),
       prisma.walletTransaction.count({
-        where: { walletId: { in: walletIds } },
+        where: {
+          walletId: { in: walletIds },
+          OR: [
+            { paymentId: null },
+            { payment: { status: 'COMPLETED' } },
+          ],
+        },
       }),
     ]);
 
