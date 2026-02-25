@@ -51,6 +51,13 @@ const normalizePhone = (value: string) => {
   if (digits.length < 8) return '0000000000';
   return digits;
 };
+const normalizeEmail = (value: string | null | undefined, userId: string) => {
+  const raw = (value || '').trim();
+  if (raw.includes('@') && raw.includes('.')) {
+    return raw;
+  }
+  return `user-${userId}@banter.app`;
+};
 
 const getMovementRpcUrls = () => {
   const urls = [MOVEMENT_RPC_URL, MOVEMENT_RPC_FALLBACK]
@@ -184,12 +191,13 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
     }
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
-    if (!user || !user.email) {
-      throw new AppError('User email is required for payment', 400);
+    if (!user) {
+      throw new AppError('User not found', 404);
     }
 
     const txRef = `BANTER_${userId}_${Date.now()}`;
     const currency = 'USD';
+    const customerEmail = normalizeEmail(user.email, userId);
 
     const payment = await prisma.payment.create({
       data: {
@@ -217,12 +225,12 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
     const logo = process.env.FLUTTERWAVE_LOGO_URL || process.env.MEDIA_CDN_BASE || '';
 
     const initPayload = {
-      email: user.email,
+      email: customerEmail,
       amount: bundle.price,
       currency,
       tx_ref: txRef,
       customer: {
-        email: user.email,
+        email: customerEmail,
         name: user.displayName || user.username || 'Banter User',
         phonenumber: phone,
         phone_number: phone,
