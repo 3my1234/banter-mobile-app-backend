@@ -173,7 +173,7 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
     }
 
     const { bundleId, redirectUrl } = req.body || {};
-    logger.info('Flutterwave create request', { userId, bundleId, redirectUrl });
+    logger.error('Flutterwave create request', { userId, bundleId, redirectUrl });
     if (!bundleId || typeof bundleId !== 'string') {
       throw new AppError('Bundle ID is required', 400);
     }
@@ -241,7 +241,7 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
       // Ensure card checkout is allowed
       payment_options: 'card',
     };
-    logger.info('Flutterwave init payload', { initPayload });
+    logger.error('Flutterwave init payload', { initPayload });
     const initResult = await initializeFlutterwavePayment(initPayload);
 
     return res.json({
