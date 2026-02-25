@@ -7,6 +7,7 @@ import { AppError } from '../utils/errorHandler';
 import {
   initializeFlutterwavePayment,
   verifyFlutterwavePayment,
+  findFlutterwaveTransactionByRef,
 } from './flutterwave';
 
 const router = Router();
@@ -234,8 +235,8 @@ router.post('/flutterwave/votes/verify', async (req: Request, res: Response): Pr
     }
 
     const { paymentId, transactionId, txRef } = req.body || {};
-    if (!paymentId || !transactionId) {
-      throw new AppError('paymentId and transactionId are required', 400);
+    if (!paymentId) {
+      throw new AppError('paymentId is required', 400);
     }
 
     const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
@@ -249,7 +250,16 @@ router.post('/flutterwave/votes/verify', async (req: Request, res: Response): Pr
       return res.json({ success: true, payment, message: 'Payment already verified' });
     }
 
-    const verification = await verifyFlutterwavePayment(transactionId);
+    let resolvedTransactionId = transactionId;
+    if (!resolvedTransactionId && txRef) {
+      resolvedTransactionId = await findFlutterwaveTransactionByRef(txRef);
+    }
+
+    if (!resolvedTransactionId) {
+      throw new AppError('transactionId or txRef is required', 400);
+    }
+
+    const verification = await verifyFlutterwavePayment(resolvedTransactionId);
     if (verification.data.status !== 'successful') {
       throw new AppError('Payment verification failed', 400);
     }
@@ -267,7 +277,7 @@ router.post('/flutterwave/votes/verify', async (req: Request, res: Response): Pr
         where: { id: paymentId },
         data: {
           status: 'COMPLETED',
-          txHash: String(transactionId),
+          txHash: String(resolvedTransactionId),
           completedAt: new Date(),
           metadata: {
             ...(payment.metadata as any),

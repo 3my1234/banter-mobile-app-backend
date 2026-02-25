@@ -74,3 +74,24 @@ export async function verifyFlutterwavePayment(
   });
   return response.data as FlutterwaveVerificationResponse;
 }
+
+export async function findFlutterwaveTransactionByRef(
+  txRef: string
+): Promise<string | null> {
+  const secretKey = getSecretKey();
+  const response = await axios.get(`${baseURL}/transactions`, {
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+    },
+    params: {
+      tx_ref: txRef,
+    },
+  });
+
+  const data = response.data?.data;
+  if (Array.isArray(data) && data.length > 0) {
+    const id = data[0]?.id;
+    return id ? String(id) : null;
+  }
+  return null;
+}
