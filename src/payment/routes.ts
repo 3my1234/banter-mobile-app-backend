@@ -59,6 +59,8 @@ const getMovementRpcUrls = () => {
   return Array.from(new Set(urls));
 };
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 const fetchMovementTransaction = async (txHash: string) => {
   const rpcUrls = getMovementRpcUrls();
   let lastError: unknown = null;
@@ -81,6 +83,33 @@ const fetchMovementTransaction = async (txHash: string) => {
   }
 
   throw new Error('No Movement RPC configured');
+};
+
+const fetchMovementTransactionWithRetry = async (txHash: string) => {
+  const attempts = 5;
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await fetchMovementTransaction(txHash);
+    } catch (error) {
+      logger.warn('Movement tx not found, retrying', { txHash, attempt: i + 1 });
+      await sleep(2000 * (i + 1));
+    }
+  }
+  throw new AppError('Transaction not confirmed', 400);
+};
+
+const isHttpsUrl = (value?: string | null) =>
+  typeof value === 'string' && value.trim().toLowerCase().startsWith('https://');
+
+const resolveFlutterwaveRedirect = (input?: string) => {
+  if (isHttpsUrl(input)) return input!.trim();
+  if (isHttpsUrl(process.env.FLUTTERWAVE_REDIRECT_URL)) {
+    return process.env.FLUTTERWAVE_REDIRECT_URL!.trim();
+  }
+  if (isHttpsUrl(process.env.FRONTEND_URL)) {
+    return process.env.FRONTEND_URL!.trim();
+  }
+  return 'https://sportbanter.online';
 };
 
 router.get('/flutterwave/debug', async (_req: Request, res: Response): Promise<Response> => {
@@ -182,12 +211,7 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
       },
     });
 
-    const redirect =
-      typeof redirectUrl === 'string' && redirectUrl.trim().length > 0
-        ? redirectUrl.trim()
-        : process.env.FLUTTERWAVE_REDIRECT_URL ||
-          process.env.FRONTEND_URL ||
-          'banterv3://payments/flutterwave';
+    const redirect = resolveFlutterwaveRedirect(redirectUrl);
 
     const phone = normalizePhone(user.phone || '');
     const logo = process.env.FLUTTERWAVE_LOGO_URL || process.env.MEDIA_CDN_BASE || '';
@@ -422,7 +446,7 @@ router.post('/movement/votes/verify', async (req: Request, res: Response): Promi
       return res.json({ success: true, payment, message: 'Payment already verified' });
     }
 
-    const tx = await fetchMovementTransaction(txHash);
+    const tx = await fetchMovementTransactionWithRetry(txHash);
     if (!tx?.success) {
       throw new AppError('Transaction not confirmed', 400);
     }
