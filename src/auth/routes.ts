@@ -85,21 +85,23 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
     const privyUser = await privyClient.getUserById((claims as any).userId);
 
     const email =
-      privyUser?.email?.address ||
-      privyUser?.email ||
-      privyUser?.primaryEmail ||
+      (privyUser as any)?.email?.address ||
+      (privyUser as any)?.email ||
       '';
     if (!email || typeof email !== 'string') {
       throw new AppError('Privy email not available', 400);
     }
 
     const displayName =
-      privyUser?.name ||
-      privyUser?.displayName ||
-      privyUser?.google?.name ||
+      (privyUser as any)?.name ||
+      (privyUser as any)?.displayName ||
+      (privyUser as any)?.google?.name ||
       null;
 
-    const linkedAccounts = privyUser?.linkedAccounts || privyUser?.linked_accounts || [];
+    const linkedAccounts =
+      (privyUser as any)?.linkedAccounts ||
+      (privyUser as any)?.linked_accounts ||
+      [];
     const wallets = mapPrivyWallets(linkedAccounts);
 
     const movementWallet = wallets.find((w) => w.blockchain === 'MOVEMENT');
