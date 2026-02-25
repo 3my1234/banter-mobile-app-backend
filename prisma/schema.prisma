@@ -61,6 +61,7 @@ model Wallet {
   type            String?  // e.g., PRIVY_EMBEDDED, PRIVY_EXTERNAL
   walletClient    String?  // e.g., APTOS_EMBEDDED, SOLANA_EMBEDDED
   isPrimary       Boolean  @default(false)
+  encryptedPrivateKey String?
   
   // Relations
   walletBalances  WalletBalance[]

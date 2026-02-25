@@ -6,6 +6,7 @@ import { logger } from '../utils/logger';
 import { AppError } from '../utils/errorHandler';
 import { generateToken } from './jwt';
 import { PrivyClient } from '@privy-io/server-auth';
+import { ensureServerMovementWallet } from './aptosWalletService';
 
 const router = Router();
 const privyClient = new PrivyClient(
@@ -102,9 +103,9 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
       (privyUser as any)?.linkedAccounts ||
       (privyUser as any)?.linked_accounts ||
       [];
-    const wallets = mapPrivyWallets(linkedAccounts);
+    let wallets = mapPrivyWallets(linkedAccounts);
 
-    const movementWallet = wallets.find((w) => w.blockchain === 'MOVEMENT');
+    let movementWallet = wallets.find((w) => w.blockchain === 'MOVEMENT');
     const solanaWallet = wallets.find((w) => w.blockchain === 'SOLANA');
 
     const user = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -155,6 +156,21 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
 
       return existing;
     });
+
+    if (!movementWallet) {
+      try {
+        const serverWallet = await ensureServerMovementWallet(user.id);
+        movementWallet = {
+          address: serverWallet.address,
+          blockchain: 'MOVEMENT',
+          type: serverWallet.type || 'APTOS_GENERATED',
+          walletClient: serverWallet.walletClient || 'APTOS_SERVER',
+        };
+        wallets = [...wallets, movementWallet];
+      } catch (error) {
+        logger.warn('Failed to create server-side Movement wallet', { error });
+      }
+    }
 
     const token = generateToken(user.id, user.email || '');
     res.json({
