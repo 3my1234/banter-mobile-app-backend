@@ -17,6 +17,7 @@ export type FlutterwavePaymentData = {
     description?: string;
     logo?: string;
   };
+  meta?: Record<string, any>;
   redirect_url: string;
 };
 
