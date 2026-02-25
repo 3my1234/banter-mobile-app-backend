@@ -85,13 +85,14 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
     const claims = await privyClient.verifyAuthToken(privyToken);
     const privyUser = await privyClient.getUserById((claims as any).userId);
 
-    const email =
+    const rawEmail =
       (privyUser as any)?.email?.address ||
       (privyUser as any)?.email ||
       '';
-    if (!email || typeof email !== 'string') {
-      throw new AppError('Privy email not available', 400);
-    }
+    const email =
+      typeof rawEmail === 'string' && rawEmail.includes('@')
+        ? rawEmail
+        : `privy-${(claims as any).userId}@banter.app`;
 
     const displayName =
       (privyUser as any)?.name ||
