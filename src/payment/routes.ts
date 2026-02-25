@@ -52,8 +52,10 @@ const normalizePhone = (value: string) => {
   return digits;
 };
 const normalizeEmail = (value: string | null | undefined, userId: string) => {
-  const raw = (value || '').trim();
-  if (raw.includes('@') && raw.includes('.')) {
+  const raw = (value || '').trim().toLowerCase();
+  const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(raw);
+  const isLocal = raw.endsWith('.local');
+  if (isEmail && !isLocal) {
     return raw;
   }
   return `user-${userId}@banter.app`;
