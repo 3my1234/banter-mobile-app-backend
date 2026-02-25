@@ -208,7 +208,7 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
         amountRaw: bundle.price.toFixed(2),
         currency,
         tokenAddress: 'FLUTTERWAVE',
-        fromAddress: user.email,
+        fromAddress: customerEmail,
         toAddress: 'FLUTTERWAVE',
         status: 'PENDING',
         metadata: {
