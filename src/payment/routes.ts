@@ -226,7 +226,8 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
       currency,
     });
   } catch (error) {
-    logger.error('Create Flutterwave vote payment error', { error });
+    const fwError = (error as any)?.response?.data || (error as any)?.message || error;
+    logger.error('Create Flutterwave vote payment error', { error: fwError });
     if (error instanceof AppError) {
       return res.status(error.statusCode).json({ success: false, message: error.message });
     }
