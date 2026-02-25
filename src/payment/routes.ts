@@ -46,6 +46,11 @@ const findBundle = (bundleId: string) =>
   VOTE_BUNDLES.find((bundle) => bundle.id === bundleId);
 
 const normalizeAddress = (value: string) => value.trim().toLowerCase();
+const normalizePhone = (value: string) => {
+  const digits = (value || '').replace(/\D+/g, '');
+  if (digits.length < 8) return '0000000000';
+  return digits;
+};
 
 const getMovementRpcUrls = () => {
   const urls = [MOVEMENT_RPC_URL, MOVEMENT_RPC_FALLBACK]
@@ -183,7 +188,7 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
           process.env.FRONTEND_URL ||
           'banterv3://payments/flutterwave';
 
-    const phone = user.phone?.trim() || '';
+    const phone = normalizePhone(user.phone || '');
     const logo = process.env.FLUTTERWAVE_LOGO_URL || process.env.MEDIA_CDN_BASE || '';
 
     const initResult = await initializeFlutterwavePayment({
@@ -194,7 +199,13 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
       customer: {
         email: user.email,
         name: user.displayName || user.username || 'Banter User',
-        ...(phone ? { phonenumber: phone } : { phonenumber: '0000000000' }),
+        phonenumber: phone,
+        phone_number: phone,
+      },
+      meta: {
+        paymentId: payment.id,
+        userId,
+        bundleId: bundle.id,
       },
       customizations: {
         title: 'Banter Vote Purchase',
@@ -219,11 +230,14 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
     if (error instanceof AppError) {
       return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    const message =
-      (error as any)?.response?.data?.message ||
+    const details =
+      (error as any)?.response?.data ||
       (error as any)?.message ||
       'Failed to create payment';
-    return res.status(500).json({ success: false, message });
+    const message =
+      (error as any)?.response?.data?.message ||
+      (typeof details === 'string' ? details : 'Failed to create payment');
+    return res.status(500).json({ success: false, message, details });
   }
 });
 
