@@ -420,6 +420,12 @@ router.post('/movement/votes/create', async (req: Request, res: Response): Promi
       amountRaw: payment.amountRaw,
       tokenAddress: payment.tokenAddress,
       decimals: MOVEMENT_USDC_DECIMALS,
+      transactionData: {
+        type: 'entry_function_payload',
+        function: '0x1::primary_fungible_store::transfer',
+        type_arguments: ['0x1::fungible_asset::Metadata'],
+        arguments: [MOVEMENT_USDC_ADDRESS, MOVEMENT_USDC_RECEIVER, rawAmount],
+      },
       message: 'Send Movement USDC.e to complete this purchase.',
     });
   } catch (error) {
