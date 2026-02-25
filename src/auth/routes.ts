@@ -5,8 +5,175 @@ import { jwtAuthMiddleware } from './jwtMiddleware';
 import { logger } from '../utils/logger';
 import { AppError } from '../utils/errorHandler';
 import { generateToken } from './jwt';
+import { PrivyClient } from '@privy-io/server-auth';
 
 const router = Router();
+const privyClient = new PrivyClient(
+  process.env.PRIVY_APP_ID || '',
+  process.env.PRIVY_APP_SECRET || ''
+);
+
+const mapPrivyWallets = (linkedAccounts: any[] = []) => {
+  const wallets: Array<{
+    address: string;
+    blockchain: 'MOVEMENT' | 'SOLANA';
+    type: string;
+    walletClient: string;
+  }> = [];
+  const added = new Set<string>();
+
+  for (const account of linkedAccounts) {
+    const address = (account?.address || '').toLowerCase();
+    if (!address) continue;
+    const chainType = account?.chainType || account?.chain_type || '';
+    let blockchain: 'MOVEMENT' | 'SOLANA' | null = null;
+
+    if (chainType === 'aptos' || chainType === 'movement') {
+      blockchain = 'MOVEMENT';
+    } else if (chainType === 'solana') {
+      blockchain = 'SOLANA';
+    }
+
+    if (!blockchain) continue;
+    const key = `${address}-${blockchain}`;
+    if (added.has(key)) continue;
+    added.add(key);
+
+    const connectorType = account?.connectorType || account?.connector_type || '';
+    const walletClientType =
+      account?.walletClientType ||
+      account?.walletClient ||
+      account?.wallet_client ||
+      '';
+
+    const type =
+      connectorType === 'embedded'
+        ? 'PRIVY_EMBEDDED'
+        : connectorType === 'smart_wallet'
+        ? 'PRIVY_SMART_WALLET'
+        : 'PRIVY_EXTERNAL';
+    const walletClient = walletClientType ? walletClientType.toLowerCase() : 'privy';
+
+    wallets.push({
+      address,
+      blockchain,
+      type,
+      walletClient,
+    });
+  }
+
+  return wallets;
+};
+
+/**
+ * POST /api/auth/privy/verify
+ * Verify Privy token, sync wallets, return JWT
+ * Request: { privyToken: string }
+ */
+router.post('/privy/verify', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { privyToken } = req.body || {};
+    if (!privyToken || typeof privyToken !== 'string') {
+      throw new AppError('Privy token is required', 400);
+    }
+
+    if (!process.env.PRIVY_APP_ID || !process.env.PRIVY_APP_SECRET) {
+      throw new AppError('Privy credentials not configured', 500);
+    }
+
+    const claims = await privyClient.verifyAuthToken(privyToken);
+    const privyUser = await privyClient.getUserById((claims as any).userId);
+
+    const email =
+      privyUser?.email?.address ||
+      privyUser?.email ||
+      privyUser?.primaryEmail ||
+      '';
+    if (!email || typeof email !== 'string') {
+      throw new AppError('Privy email not available', 400);
+    }
+
+    const displayName =
+      privyUser?.name ||
+      privyUser?.displayName ||
+      privyUser?.google?.name ||
+      null;
+
+    const linkedAccounts = privyUser?.linkedAccounts || privyUser?.linked_accounts || [];
+    const wallets = mapPrivyWallets(linkedAccounts);
+
+    const movementWallet = wallets.find((w) => w.blockchain === 'MOVEMENT');
+    const solanaWallet = wallets.find((w) => w.blockchain === 'SOLANA');
+
+    const user = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+      let existing = await tx.user.findUnique({ where: { email } });
+      if (!existing) {
+        existing = await tx.user.create({
+          data: {
+            email,
+            displayName: displayName || null,
+            movementAddress: movementWallet?.address,
+            solanaAddress: solanaWallet?.address,
+          },
+        });
+      } else {
+        await tx.user.update({
+          where: { id: existing.id },
+          data: {
+            displayName: displayName || existing.displayName,
+            movementAddress: movementWallet?.address || existing.movementAddress,
+            solanaAddress: solanaWallet?.address || existing.solanaAddress,
+          },
+        });
+      }
+
+      for (const wallet of wallets) {
+        await tx.wallet.upsert({
+          where: {
+            userId_blockchain_address: {
+              userId: existing.id,
+              blockchain: wallet.blockchain,
+              address: wallet.address,
+            },
+          },
+          create: {
+            userId: existing.id,
+            address: wallet.address,
+            blockchain: wallet.blockchain,
+            type: wallet.type,
+            walletClient: wallet.walletClient,
+            isPrimary: wallet.blockchain === 'MOVEMENT',
+          },
+          update: {
+            walletClient: wallet.walletClient,
+            type: wallet.type,
+          },
+        });
+      }
+
+      return existing;
+    });
+
+    const token = generateToken(user.id, user.email || '');
+    res.json({
+      token,
+      user: {
+        id: user.id,
+        email: user.email,
+        displayName: user.displayName,
+        movementAddress: user.movementAddress,
+        solanaAddress: user.solanaAddress,
+      },
+    });
+  } catch (error) {
+    logger.error('Privy verify error', { error });
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({ error: error.message });
+      return;
+    }
+    res.status(500).json({ error: 'Failed to verify privy token' });
+  }
+});
 
 /**
  * POST /api/auth/check
