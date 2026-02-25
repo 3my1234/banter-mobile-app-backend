@@ -10,6 +10,7 @@ export type FlutterwavePaymentData = {
     email: string;
     name: string;
     phonenumber?: string;
+    phone_number?: string;
   };
   customizations?: {
     title?: string;
