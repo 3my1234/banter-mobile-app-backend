@@ -22,6 +22,7 @@ import leagueRoutes from './league/routes';
 import userRoutes from './user/routes';
 import paymentRoutes from './payment/routes';
 import mediaRoutes from './media/routes';
+import opsRoutes from './ops/routes';
 
 dotenv.config();
 
@@ -86,6 +87,7 @@ app.use('/api/public/payments', paymentRoutes);
 // Authenticated payments
 app.use('/api/payments', jwtAuthMiddleware, paymentRoutes);
 app.use('/api/media', mediaRoutes);
+app.use('/api/ops', opsRoutes);
 app.use('/api/tags', tagRoutes); // Public endpoint
 app.use('/api/leagues', leagueRoutes); // Public endpoint
 app.use('/api/users', jwtAuthMiddleware, userRoutes);
