@@ -66,6 +66,24 @@ const mapPrivyWallets = (linkedAccounts: any[] = []) => {
   return wallets;
 };
 
+const resolvePrivyEmail = (privyUser: any, linkedAccounts: any[] = []) => {
+  const directEmail = privyUser?.email?.address || privyUser?.email || '';
+  if (typeof directEmail === 'string' && directEmail.includes('@')) {
+    return directEmail.trim().toLowerCase();
+  }
+
+  const linkedEmail = linkedAccounts.find((account: any) => {
+    const email = account?.email;
+    return typeof email === 'string' && email.includes('@');
+  })?.email;
+
+  if (typeof linkedEmail === 'string' && linkedEmail.includes('@')) {
+    return linkedEmail.trim().toLowerCase();
+  }
+
+  return null;
+};
+
 /**
  * POST /api/auth/privy/verify
  * Verify Privy token, sync wallets, return JWT
@@ -85,14 +103,14 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
     const claims = await privyClient.verifyAuthToken(privyToken);
     const privyUser = await privyClient.getUserById((claims as any).userId);
 
-    const rawEmail =
-      (privyUser as any)?.email?.address ||
-      (privyUser as any)?.email ||
-      '';
-    const email =
-      typeof rawEmail === 'string' && rawEmail.includes('@')
-        ? rawEmail
-        : `privy-${(claims as any).userId}@banter.app`;
+    const linkedAccounts =
+      (privyUser as any)?.linkedAccounts ||
+      (privyUser as any)?.linked_accounts ||
+      [];
+    const email = resolvePrivyEmail(privyUser, linkedAccounts);
+    if (!email) {
+      throw new AppError('Privy email not available', 400);
+    }
 
     const displayName =
       (privyUser as any)?.name ||
@@ -100,10 +118,6 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
       (privyUser as any)?.google?.name ||
       null;
 
-    const linkedAccounts =
-      (privyUser as any)?.linkedAccounts ||
-      (privyUser as any)?.linked_accounts ||
-      [];
     let wallets = mapPrivyWallets(linkedAccounts);
 
     let movementWallet = wallets.find((w) => w.blockchain === 'MOVEMENT');
