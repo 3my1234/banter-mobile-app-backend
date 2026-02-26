@@ -125,38 +125,32 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
     const solanaWallet = wallets.find((w) => w.blockchain === 'SOLANA');
 
     const user = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-      let existing = await tx.user.findUnique({ where: { email } });
-      if (!existing) {
-        existing = await tx.user.create({
-          data: {
-            email,
-            displayName: displayName || null,
-            movementAddress: movementWallet?.address,
-            solanaAddress: solanaWallet?.address,
-          },
-        });
-      } else {
-        await tx.user.update({
-          where: { id: existing.id },
-          data: {
-            displayName: displayName || existing.displayName,
-            movementAddress: movementWallet?.address || existing.movementAddress,
-            solanaAddress: solanaWallet?.address || existing.solanaAddress,
-          },
-        });
-      }
+      const syncedUser = await tx.user.upsert({
+        where: { email },
+        create: {
+          email,
+          displayName: displayName || null,
+          movementAddress: movementWallet?.address,
+          solanaAddress: solanaWallet?.address,
+        },
+        update: {
+          ...(displayName ? { displayName } : {}),
+          ...(movementWallet?.address ? { movementAddress: movementWallet.address } : {}),
+          ...(solanaWallet?.address ? { solanaAddress: solanaWallet.address } : {}),
+        },
+      });
 
       for (const wallet of wallets) {
         await tx.wallet.upsert({
           where: {
             userId_blockchain_address: {
-              userId: existing.id,
+              userId: syncedUser.id,
               blockchain: wallet.blockchain,
               address: wallet.address,
             },
           },
           create: {
-            userId: existing.id,
+            userId: syncedUser.id,
             address: wallet.address,
             blockchain: wallet.blockchain,
             type: wallet.type,
@@ -170,7 +164,7 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
         });
       }
 
-      return existing;
+      return syncedUser;
     });
 
     if (!movementWallet) {
