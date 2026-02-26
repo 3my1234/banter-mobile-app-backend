@@ -24,8 +24,8 @@ const mapPrivyWallets = (linkedAccounts: any[] = []) => {
   const added = new Set<string>();
 
   for (const account of linkedAccounts) {
-    const address = (account?.address || '').toLowerCase();
-    if (!address) continue;
+    const rawAddress = (account?.address || '').trim();
+    if (!rawAddress) continue;
     const chainType = account?.chainType || account?.chain_type || '';
     let blockchain: 'MOVEMENT' | 'SOLANA' | null = null;
 
@@ -36,6 +36,7 @@ const mapPrivyWallets = (linkedAccounts: any[] = []) => {
     }
 
     if (!blockchain) continue;
+    const address = blockchain === 'MOVEMENT' ? rawAddress.toLowerCase() : rawAddress;
     const key = `${address}-${blockchain}`;
     if (added.has(key)) continue;
     added.add(key);
