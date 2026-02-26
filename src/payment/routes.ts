@@ -630,81 +630,7 @@ router.post('/movement/votes/create', async (req: Request, res: Response): Promi
       },
     });
 
-    const serverAccount = await getServerMovementAccount(userId);
-    if (serverAccount) {
-      const config = new AptosConfig({
-        network: Network.CUSTOM,
-        fullnode: MOVEMENT_RPC_URL,
-      });
-      const aptos = new Aptos(config);
-      const transaction = await aptos.transaction.build.simple({
-        sender: serverAccount.accountAddress,
-        data: {
-          function: '0x1::primary_fungible_store::transfer',
-          typeArguments: ['0x1::fungible_asset::Metadata'],
-          functionArguments: [MOVEMENT_USDC_ADDRESS, MOVEMENT_USDC_RECEIVER, rawAmount],
-        },
-      });
-      const pending = await aptos.signAndSubmitTransaction({
-        signer: serverAccount,
-        transaction,
-      });
-      await aptos.waitForTransaction({ transactionHash: pending.hash });
-
-      const updated = await prisma.$transaction(async (txDb) => {
-        const updatedPayment = await txDb.payment.update({
-          where: { id: payment.id },
-          data: {
-            status: 'COMPLETED',
-            txHash: pending.hash,
-            completedAt: new Date(),
-          },
-        });
-
-        await txDb.user.update({
-          where: { id: userId },
-          data: {
-            voteBalance: { increment: bundle.votes },
-          },
-        });
-
-        const wallet = await txDb.wallet.findFirst({
-          where: { userId, blockchain: 'MOVEMENT' },
-        });
-        if (wallet) {
-          await txDb.walletTransaction.create({
-            data: {
-              walletId: wallet.id,
-              txHash: pending.hash,
-              txType: 'PAYMENT',
-              amount: payment.amountRaw,
-              tokenAddress: payment.tokenAddress,
-              tokenSymbol: 'USDC.e',
-              fromAddress: payment.fromAddress,
-              toAddress: payment.toAddress,
-              status: 'COMPLETED',
-              description: 'Vote bundle purchase',
-              paymentId: payment.id,
-              metadata: {
-                bundleId: bundle.id,
-                votes: bundle.votes,
-              },
-            },
-          });
-        }
-        return updatedPayment;
-      });
-
-      return res.json({
-        success: true,
-        paymentId: updated.id,
-        txHash: pending.hash,
-        status: 'COMPLETED',
-        message: 'Payment completed on server.',
-      });
-    }
-
-    return res.json({
+    const clientSidePayload = {
       success: true,
       paymentId: payment.id,
       chain: 'MOVEMENT',
@@ -721,13 +647,101 @@ router.post('/movement/votes/create', async (req: Request, res: Response): Promi
         arguments: [MOVEMENT_USDC_ADDRESS, MOVEMENT_USDC_RECEIVER, rawAmount],
       },
       message: 'Send Movement USDC.e to complete this purchase.',
-    });
+    };
+
+    const serverAccount = await getServerMovementAccount(userId);
+    if (serverAccount) {
+      try {
+        const config = new AptosConfig({
+          network: Network.CUSTOM,
+          fullnode: MOVEMENT_RPC_URL,
+        });
+        const aptos = new Aptos(config);
+        const transaction = await aptos.transaction.build.simple({
+          sender: serverAccount.accountAddress,
+          data: {
+            function: '0x1::primary_fungible_store::transfer',
+            typeArguments: ['0x1::fungible_asset::Metadata'],
+            functionArguments: [MOVEMENT_USDC_ADDRESS, MOVEMENT_USDC_RECEIVER, rawAmount],
+          },
+        });
+        const pending = await aptos.signAndSubmitTransaction({
+          signer: serverAccount,
+          transaction,
+        });
+        await aptos.waitForTransaction({ transactionHash: pending.hash });
+
+        const updated = await prisma.$transaction(async (txDb) => {
+          const updatedPayment = await txDb.payment.update({
+            where: { id: payment.id },
+            data: {
+              status: 'COMPLETED',
+              txHash: pending.hash,
+              completedAt: new Date(),
+            },
+          });
+
+          await txDb.user.update({
+            where: { id: userId },
+            data: {
+              voteBalance: { increment: bundle.votes },
+            },
+          });
+
+          const wallet = await txDb.wallet.findFirst({
+            where: { userId, blockchain: 'MOVEMENT' },
+          });
+          if (wallet) {
+            await txDb.walletTransaction.create({
+              data: {
+                walletId: wallet.id,
+                txHash: pending.hash,
+                txType: 'PAYMENT',
+                amount: payment.amountRaw,
+                tokenAddress: payment.tokenAddress,
+                tokenSymbol: 'USDC.e',
+                fromAddress: payment.fromAddress,
+                toAddress: payment.toAddress,
+                status: 'COMPLETED',
+                description: 'Vote bundle purchase',
+                paymentId: payment.id,
+                metadata: {
+                  bundleId: bundle.id,
+                  votes: bundle.votes,
+                },
+              },
+            });
+          }
+          return updatedPayment;
+        });
+
+        return res.json({
+          success: true,
+          paymentId: updated.id,
+          txHash: pending.hash,
+          status: 'COMPLETED',
+          message: 'Payment completed on server.',
+        });
+      } catch (serverPaymentError) {
+        logger.error('Server-side Movement payment failed; falling back to client signing flow', {
+          userId,
+          paymentId: payment.id,
+          error: serverPaymentError,
+        });
+      }
+    }
+
+    return res.json(clientSidePayload);
   } catch (error) {
     logger.error('Create Movement vote payment error', { error });
     if (error instanceof AppError) {
       return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    return res.status(500).json({ success: false, message: 'Failed to create payment' });
+    const errorMessage =
+      (error as any)?.response?.data?.message ||
+      (error as Error)?.message ||
+      'Failed to create payment';
+    return res.status(500).json({ success: false, message: errorMessage });
   }
 });
 
