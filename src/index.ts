@@ -48,6 +48,14 @@ app.use(cors({
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
+// Privy OAuth redirect helper: bounce HTTPS callback to app deep link
+app.get('/privy/oauth', (req, res) => {
+  const params = new URLSearchParams(req.query as Record<string, string>);
+  const query = params.toString();
+  const target = `banterv3://oauth${query ? `?${query}` : ''}`;
+  res.redirect(302, target);
+});
+
 // Health check (root)
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
