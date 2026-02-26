@@ -6,7 +6,6 @@ import { logger } from '../utils/logger';
 import { AppError } from '../utils/errorHandler';
 import { generateToken } from './jwt';
 import { PrivyClient } from '@privy-io/server-auth';
-import { ensureServerMovementWallet } from './aptosWalletService';
 
 const router = Router();
 const privyClient = new PrivyClient(
@@ -149,6 +148,7 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
 
     const mappedWallets = mapPrivyWallets(linkedAccounts);
     const selectedWallets = pickPrimaryWalletsByChain(mappedWallets);
+    const movementWallet = selectedWallets.movement || undefined;
     const solanaWallet = selectedWallets.solana || undefined;
 
     const user = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
@@ -157,12 +157,13 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
         create: {
           email,
           displayName: displayName || null,
-          movementAddress: null,
+          movementAddress: movementWallet?.address || null,
           solanaAddress: solanaWallet?.address || null,
         },
         update: {
           ...(displayName ? { displayName } : {}),
-          ...(solanaWallet?.address ? { solanaAddress: solanaWallet.address } : {}),
+          movementAddress: movementWallet?.address || null,
+          solanaAddress: solanaWallet?.address || null,
         },
       });
 
@@ -184,24 +185,25 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
         });
       }
 
-      // Keep Movement records clean: remove stale non-server Movement wallets.
-      // Server-managed Movement wallets are those with encryptedPrivateKey != null.
+      // Reconcile MOVEMENT wallet strictly to current Privy state (single wallet per chain).
       await tx.wallet.deleteMany({
-        where: {
-          userId: syncedUser.id,
-          blockchain: 'MOVEMENT',
-          encryptedPrivateKey: null,
-        },
+        where: { userId: syncedUser.id, blockchain: 'MOVEMENT' },
       });
+      if (movementWallet) {
+        await tx.wallet.create({
+          data: {
+            userId: syncedUser.id,
+            address: movementWallet.address,
+            blockchain: 'MOVEMENT',
+            type: movementWallet.type,
+            walletClient: movementWallet.walletClient,
+            isPrimary: false,
+          },
+        });
+      }
 
       return syncedUser;
     });
-
-    try {
-      await ensureServerMovementWallet(user.id);
-    } catch (error) {
-      logger.warn('Failed to create server-side Movement wallet', { error });
-    }
 
     const refreshedUser = await prisma.user.findUnique({
       where: { id: user.id },
