@@ -107,6 +107,44 @@ const fetchMovementTransactionWithRetry = async (txHash: string) => {
   throw new AppError('Transaction not confirmed', 400);
 };
 
+const extractAddressArg = (value: any): string => {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'bigint') return value.toString();
+  if (!value || typeof value !== 'object') return '';
+  const candidates = [value.address, value.account, value.value, value.inner];
+  for (const candidate of candidates) {
+    if (typeof candidate === 'string' && candidate.trim()) {
+      return candidate;
+    }
+  }
+  return '';
+};
+
+const extractAmountArg = (value: any): bigint => {
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return BigInt(Math.trunc(value));
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (!trimmed) return BigInt(0);
+    if (/^0x[0-9a-f]+$/i.test(trimmed)) return BigInt(trimmed);
+    if (/^\d+$/.test(trimmed)) return BigInt(trimmed);
+    const digits = trimmed.match(/\d+/g)?.join('') || '';
+    if (digits) return BigInt(digits);
+    throw new AppError(`Unable to parse Movement amount: ${trimmed}`, 400);
+  }
+  if (value && typeof value === 'object') {
+    const nestedCandidates = [value.amount, value.value, value.inner, value.vec?.[0]];
+    for (const candidate of nestedCandidates) {
+      try {
+        return extractAmountArg(candidate);
+      } catch {
+        // keep trying
+      }
+    }
+  }
+  throw new AppError('Unable to parse Movement amount from transaction payload', 400);
+};
+
 const ensureMovementAccountExists = async (address: string) => {
   const rpcUrls = getMovementRpcUrls();
   const normalizedAddress = normalizeAddress(address);
@@ -742,7 +780,7 @@ router.post('/movement/votes/verify', async (req: Request, res: Response): Promi
     const payload = tx.payload || {};
     const func = (payload.function || payload.entry_function_id || '').toString();
     const typeArgs = (payload.type_arguments || payload.typeArguments || []) as string[];
-    const args = (payload.arguments || payload.functionArguments || []) as string[];
+    const args = (payload.arguments || payload.functionArguments || []) as any[];
 
     let receiverArg = '';
     let amountArg = '';
@@ -750,12 +788,12 @@ router.post('/movement/votes/verify', async (req: Request, res: Response): Promi
 
     if (func.includes('primary_fungible_store::transfer')) {
       // args: [metadata_address, recipient, amount]
-      tokenArg = args[0] || '';
-      receiverArg = args[1] || '';
+      tokenArg = extractAddressArg(args[0] || '');
+      receiverArg = extractAddressArg(args[1] || '');
       amountArg = args[2] || '';
     } else {
       // coin::transfer args: [recipient, amount]
-      receiverArg = args[0] || '';
+      receiverArg = extractAddressArg(args[0] || '');
       amountArg = args[1] || '';
       tokenArg = typeArgs[0] || '';
     }
@@ -771,7 +809,7 @@ router.post('/movement/votes/verify', async (req: Request, res: Response): Promi
       throw new AppError('Token mismatch', 400);
     }
 
-    const paid = BigInt(amountArg || '0');
+    const paid = extractAmountArg(amountArg);
     const required = BigInt(payment.amountRaw);
     if (paid < required) {
       throw new AppError('Payment amount mismatch', 400);
@@ -811,8 +849,9 @@ router.post('/movement/votes/verify', async (req: Request, res: Response): Promi
       });
 
       if (wallet) {
-        await txDb.walletTransaction.create({
-          data: {
+        await txDb.walletTransaction.upsert({
+          where: { txHash },
+          create: {
             walletId: wallet.id,
             txHash,
             txType: 'PAYMENT',
@@ -829,6 +868,10 @@ router.post('/movement/votes/verify', async (req: Request, res: Response): Promi
               votes: (payment.metadata as any)?.votes,
             },
           },
+          update: {
+            status: 'COMPLETED',
+            paymentId: payment.id,
+          },
         });
       }
 
@@ -841,7 +884,11 @@ router.post('/movement/votes/verify', async (req: Request, res: Response): Promi
     if (error instanceof AppError) {
       return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    return res.status(500).json({ success: false, message: 'Failed to verify payment' });
+    const errorMessage =
+      (error as any)?.response?.data?.message ||
+      (error as Error)?.message ||
+      'Failed to verify payment';
+    return res.status(500).json({ success: false, message: errorMessage });
   }
 });
 
