@@ -49,12 +49,15 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Privy OAuth redirect helper: bounce HTTPS callback to app deep link
-app.get('/privy/oauth', (req, res) => {
+const handlePrivyOAuthRedirect = (req: express.Request, res: express.Response) => {
   const params = new URLSearchParams(req.query as Record<string, string>);
   const query = params.toString();
   const target = `banterv3://oauth${query ? `?${query}` : ''}`;
   res.redirect(302, target);
-});
+};
+
+app.get('/privy/oauth', handlePrivyOAuthRedirect);
+app.get('/oauth', handlePrivyOAuthRedirect);
 
 // Health check (root)
 app.get('/health', (_req, res) => {
