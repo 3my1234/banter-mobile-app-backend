@@ -67,6 +67,33 @@ const mapPrivyWallets = (linkedAccounts: any[] = []) => {
   return wallets;
 };
 
+const pickPrimaryWalletsByChain = (
+  wallets: Array<{
+    address: string;
+    blockchain: 'MOVEMENT' | 'SOLANA';
+    type: string;
+    walletClient: string;
+  }>
+) => {
+  const rank = (wallet: { type: string }) => {
+    if (wallet.type === 'PRIVY_EMBEDDED') return 0;
+    if (wallet.type === 'PRIVY_SMART_WALLET') return 1;
+    return 2;
+  };
+
+  const pickForChain = (blockchain: 'MOVEMENT' | 'SOLANA') => {
+    const options = wallets.filter((wallet) => wallet.blockchain === blockchain);
+    if (options.length === 0) return null;
+    options.sort((a, b) => rank(a) - rank(b));
+    return options[0];
+  };
+
+  return {
+    movement: pickForChain('MOVEMENT'),
+    solana: pickForChain('SOLANA'),
+  };
+};
+
 const resolvePrivyEmail = (privyUser: any, linkedAccounts: any[] = []) => {
   const directEmail = privyUser?.email?.address || privyUser?.email || '';
   if (typeof directEmail === 'string' && directEmail.includes('@')) {
@@ -119,10 +146,9 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
       (privyUser as any)?.google?.name ||
       null;
 
-    let wallets = mapPrivyWallets(linkedAccounts);
-
-    let movementWallet = wallets.find((w) => w.blockchain === 'MOVEMENT');
-    const solanaWallet = wallets.find((w) => w.blockchain === 'SOLANA');
+    const mappedWallets = mapPrivyWallets(linkedAccounts);
+    const selectedWallets = pickPrimaryWalletsByChain(mappedWallets);
+    const solanaWallet = selectedWallets.solana || undefined;
 
     const user = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const syncedUser = await tx.user.upsert({
@@ -130,67 +156,76 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
         create: {
           email,
           displayName: displayName || null,
-          movementAddress: movementWallet?.address,
-          solanaAddress: solanaWallet?.address,
+          movementAddress: null,
+          solanaAddress: solanaWallet?.address || null,
         },
         update: {
           ...(displayName ? { displayName } : {}),
-          ...(movementWallet?.address ? { movementAddress: movementWallet.address } : {}),
-          ...(solanaWallet?.address ? { solanaAddress: solanaWallet.address } : {}),
+          solanaAddress: solanaWallet?.address || null,
         },
       });
 
-      for (const wallet of wallets) {
-        await tx.wallet.upsert({
-          where: {
-            userId_blockchain_address: {
-              userId: syncedUser.id,
-              blockchain: wallet.blockchain,
-              address: wallet.address,
-            },
-          },
-          create: {
+      // Reconcile SOLANA wallet strictly to current Privy state (single wallet per chain).
+      // Delete first, then recreate to avoid unique conflicts from stale duplicates.
+      await tx.wallet.deleteMany({
+        where: { userId: syncedUser.id, blockchain: 'SOLANA' },
+      });
+      if (solanaWallet) {
+        await tx.wallet.create({
+          data: {
             userId: syncedUser.id,
-            address: wallet.address,
-            blockchain: wallet.blockchain,
-            type: wallet.type,
-            walletClient: wallet.walletClient,
-            isPrimary: wallet.blockchain === 'MOVEMENT',
-          },
-          update: {
-            walletClient: wallet.walletClient,
-            type: wallet.type,
+            address: solanaWallet.address,
+            blockchain: 'SOLANA',
+            type: solanaWallet.type,
+            walletClient: solanaWallet.walletClient,
+            isPrimary: false,
           },
         });
       }
 
+      // Keep Movement records clean: remove stale non-server Movement wallets.
+      // Server-managed Movement wallets are those with encryptedPrivateKey != null.
+      await tx.wallet.deleteMany({
+        where: {
+          userId: syncedUser.id,
+          blockchain: 'MOVEMENT',
+          encryptedPrivateKey: null,
+        },
+      });
+
       return syncedUser;
     });
 
-    if (!movementWallet) {
-      try {
-        const serverWallet = await ensureServerMovementWallet(user.id);
-        movementWallet = {
-          address: serverWallet.address,
-          blockchain: 'MOVEMENT',
-          type: serverWallet.type || 'APTOS_GENERATED',
-          walletClient: serverWallet.walletClient || 'APTOS_SERVER',
-        };
-        wallets = [...wallets, movementWallet];
-      } catch (error) {
-        logger.warn('Failed to create server-side Movement wallet', { error });
-      }
+    try {
+      await ensureServerMovementWallet(user.id);
+    } catch (error) {
+      logger.warn('Failed to create server-side Movement wallet', { error });
+    }
+
+    const refreshedUser = await prisma.user.findUnique({
+      where: { id: user.id },
+      select: {
+        id: true,
+        email: true,
+        displayName: true,
+        movementAddress: true,
+        solanaAddress: true,
+      },
+    });
+
+    if (!refreshedUser) {
+      throw new AppError('User not found after Privy sync', 500);
     }
 
     const token = generateToken(user.id, user.email || '');
     res.json({
       token,
       user: {
-        id: user.id,
-        email: user.email,
-        displayName: user.displayName,
-        movementAddress: user.movementAddress,
-        solanaAddress: user.solanaAddress,
+        id: refreshedUser.id,
+        email: refreshedUser.email,
+        displayName: refreshedUser.displayName,
+        movementAddress: refreshedUser.movementAddress,
+        solanaAddress: refreshedUser.solanaAddress,
       },
     });
   } catch (error) {

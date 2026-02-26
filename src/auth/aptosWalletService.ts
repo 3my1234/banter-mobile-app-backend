@@ -1,4 +1,5 @@
 import { Account, Ed25519PrivateKey } from '@aptos-labs/ts-sdk';
+import { Prisma } from '@prisma/client';
 import crypto from 'crypto';
 import { prisma } from '../index';
 import { logger } from '../utils/logger';
@@ -41,34 +42,69 @@ export const getServerMovementAccount = async (userId: string) => {
 };
 
 export const ensureServerMovementWallet = async (userId: string) => {
-  const existing = await prisma.wallet.findFirst({
-    where: { userId, blockchain: 'MOVEMENT', encryptedPrivateKey: { not: null } },
+  return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const lockedUser = await tx.user.findUnique({
+      where: { id: userId },
+      select: { id: true },
+    });
+
+    if (!lockedUser) {
+      throw new Error(`User not found for Movement wallet generation: ${userId}`);
+    }
+
+    // Serialize concurrent wallet creation attempts per user.
+    await tx.$executeRaw`SELECT id FROM "User" WHERE id = ${userId} FOR UPDATE`;
+
+    const existingWallets = await tx.wallet.findMany({
+      where: { userId, blockchain: 'MOVEMENT', encryptedPrivateKey: { not: null } },
+      orderBy: { createdAt: 'asc' },
+    });
+
+    const existing = existingWallets[0];
+    if (existing) {
+      await tx.user.update({
+        where: { id: userId },
+        data: { movementAddress: existing.address },
+      });
+
+      if (existingWallets.length > 1) {
+        await tx.wallet.deleteMany({
+          where: {
+            userId,
+            blockchain: 'MOVEMENT',
+            encryptedPrivateKey: { not: null },
+            id: { not: existing.id },
+          },
+        });
+      }
+
+      return existing;
+    }
+
+    const account = Account.generate();
+    const address = account.accountAddress.toString().toLowerCase();
+    const privateKey = account.privateKey.toString();
+    const encryptedPrivateKey = encryptPrivateKey(privateKey);
+
+    logger.info('Generated server-side Movement wallet', { userId, address });
+
+    const wallet = await tx.wallet.create({
+      data: {
+        userId,
+        address,
+        blockchain: 'MOVEMENT',
+        type: 'APTOS_GENERATED',
+        walletClient: 'APTOS_SERVER',
+        isPrimary: true,
+        encryptedPrivateKey,
+      },
+    });
+
+    await tx.user.update({
+      where: { id: userId },
+      data: { movementAddress: wallet.address },
+    });
+
+    return wallet;
   });
-  if (existing) return existing;
-
-  const account = Account.generate();
-  const address = account.accountAddress.toString();
-  const privateKey = account.privateKey.toString();
-  const encryptedPrivateKey = encryptPrivateKey(privateKey);
-
-  logger.info('Generated server-side Movement wallet', { userId, address });
-
-  const wallet = await prisma.wallet.create({
-    data: {
-      userId,
-      address: address.toLowerCase(),
-      blockchain: 'MOVEMENT',
-      type: 'APTOS_GENERATED',
-      walletClient: 'APTOS_SERVER',
-      isPrimary: true,
-      encryptedPrivateKey,
-    },
-  });
-
-  await prisma.user.update({
-    where: { id: userId },
-    data: { movementAddress: wallet.address },
-  });
-
-  return wallet;
 };
