@@ -26,12 +26,13 @@ const mapPrivyWallets = (linkedAccounts: any[] = []) => {
   for (const account of linkedAccounts) {
     const rawAddress = (account?.address || '').trim();
     if (!rawAddress) continue;
-    const chainType = account?.chainType || account?.chain_type || '';
+    const chainTypeRaw = account?.chainType || account?.chain_type || '';
+    const chainType = String(chainTypeRaw).toLowerCase();
     let blockchain: 'MOVEMENT' | 'SOLANA' | null = null;
 
-    if (chainType === 'aptos' || chainType === 'movement') {
+    if (chainType.includes('aptos') || chainType.includes('movement')) {
       blockchain = 'MOVEMENT';
-    } else if (chainType === 'solana') {
+    } else if (chainType.includes('solana')) {
       blockchain = 'SOLANA';
     }
 
@@ -161,16 +162,16 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
         },
         update: {
           ...(displayName ? { displayName } : {}),
-          solanaAddress: solanaWallet?.address || null,
+          ...(solanaWallet?.address ? { solanaAddress: solanaWallet.address } : {}),
         },
       });
 
       // Reconcile SOLANA wallet strictly to current Privy state (single wallet per chain).
-      // Delete first, then recreate to avoid unique conflicts from stale duplicates.
-      await tx.wallet.deleteMany({
-        where: { userId: syncedUser.id, blockchain: 'SOLANA' },
-      });
       if (solanaWallet) {
+        // Delete first, then recreate to avoid unique conflicts from stale duplicates.
+        await tx.wallet.deleteMany({
+          where: { userId: syncedUser.id, blockchain: 'SOLANA' },
+        });
         await tx.wallet.create({
           data: {
             userId: syncedUser.id,
