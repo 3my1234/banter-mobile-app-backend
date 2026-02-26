@@ -107,6 +107,46 @@ const fetchMovementTransactionWithRetry = async (txHash: string) => {
   throw new AppError('Transaction not confirmed', 400);
 };
 
+const ensureMovementAccountExists = async (address: string) => {
+  const rpcUrls = getMovementRpcUrls();
+  const normalizedAddress = normalizeAddress(address);
+  let sawAccountNotFound = false;
+  let lastError: unknown = null;
+
+  for (const rpcUrl of rpcUrls) {
+    try {
+      await axios.get(`${rpcUrl}/accounts/${normalizedAddress}`, {
+        timeout: 10000,
+      });
+      return;
+    } catch (error: any) {
+      const status = error?.response?.status;
+      if (status === 404) {
+        sawAccountNotFound = true;
+        continue;
+      }
+      lastError = error;
+      logger.warn('Movement account existence check failed on RPC', {
+        rpcUrl,
+        address: normalizedAddress,
+      });
+    }
+  }
+
+  if (sawAccountNotFound) {
+    throw new AppError(
+      `Movement account not initialized on-chain for ${normalizedAddress}. Fund this wallet with MOVE on Movement testnet, wait confirmation, then retry.`,
+      400
+    );
+  }
+
+  if (lastError) {
+    throw lastError;
+  }
+
+  throw new AppError('No Movement RPC configured', 500);
+};
+
 const isHttpsUrl = (value?: string | null) =>
   typeof value === 'string' && value.trim().toLowerCase().startsWith('https://');
 
@@ -606,6 +646,7 @@ router.post('/movement/votes/create', async (req: Request, res: Response): Promi
     if (!user || !user.movementAddress) {
       throw new AppError('Movement wallet not found', 400);
     }
+    await ensureMovementAccountExists(user.movementAddress);
 
     const rawAmount = Math.round(bundle.price * 10 ** MOVEMENT_USDC_DECIMALS).toString();
 
