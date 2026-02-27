@@ -192,9 +192,14 @@ router.get('/users', async (req: Request, res: Response): Promise<void> => {
       prisma.user.count({ where }),
     ]);
 
+    const safeUsers = users.map((user) => ({
+      ...user,
+      rolBalanceRaw: user.rolBalanceRaw.toString(),
+    }));
+
     res.json({
       success: true,
-      users,
+      users: safeUsers,
       pagination: {
         page,
         limit,
@@ -253,9 +258,14 @@ router.get('/users/:id', async (req: Request, res: Response): Promise<void> => {
       throw new AppError('User not found', 404);
     }
 
+    const safeUser = {
+      ...user,
+      rolBalanceRaw: user.rolBalanceRaw.toString(),
+    };
+
     res.json({
       success: true,
-      user,
+      user: safeUser,
     });
     return;
   } catch (error) {
