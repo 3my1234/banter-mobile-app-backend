@@ -42,6 +42,21 @@ const getPagination = (req: Request) => {
   return { page, limit, skip };
 };
 
+const isTableMissingError = (error: unknown) =>
+  error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2021';
+
+const safePcaCount = async (model: 'pcaCategory' | 'pcaVote') => {
+  try {
+    return await (prisma as any)[model].count();
+  } catch (error) {
+    if (isTableMissingError(error)) {
+      logger.warn(`PCA table missing during admin query: ${model}`);
+      return 0;
+    }
+    throw error;
+  }
+};
+
 /**
  * POST /api/admin/auth/login
  */
@@ -94,8 +109,8 @@ router.get('/overview', async (_req: Request, res: Response): Promise<void> => {
         where: { status: 'COMPLETED' },
         _sum: { amount: true },
       }),
-      prisma.pcaCategory.count(),
-      prisma.pcaVote.count(),
+      safePcaCount('pcaCategory'),
+      safePcaCount('pcaVote'),
     ]);
 
     res.json({
@@ -280,6 +295,10 @@ router.get('/pca/categories', async (req: Request, res: Response): Promise<void>
     res.json({ success: true, categories });
     return;
   } catch (error) {
+    if (isTableMissingError(error)) {
+      res.json({ success: true, categories: [], warning: 'PCA tables not migrated yet' });
+      return;
+    }
     logger.error('Admin PCA categories list error', { error });
     if (error instanceof AppError) {
       res.status(error.statusCode).json({ success: false, message: error.message });
