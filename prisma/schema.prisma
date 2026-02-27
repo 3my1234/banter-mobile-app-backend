@@ -39,6 +39,7 @@ model User {
   reactions       Reaction[]
   payments        Payment[]
   notifications   Notification[]
+  pcaVotes        PcaVote[]
   followers       Follow[] @relation("UserFollowers")
   following       Follow[] @relation("UserFollowing")
   
@@ -377,6 +378,78 @@ model Notification {
 
   @@index([userId, createdAt])
   @@index([type])
+}
+
+enum PcaSport {
+  SOCCER
+  BASKETBALL
+}
+
+enum PcaCategoryType {
+  GOAL_OF_WEEK
+  PLAYER_OF_MONTH
+  TOURNAMENT_AWARD
+  BALLON_DOR_PEOPLES_CHOICE
+  CUSTOM
+}
+
+model PcaCategory {
+  id           String          @id @default(cuid())
+  sport        PcaSport
+  season       String
+  categoryType PcaCategoryType @default(CUSTOM)
+  title        String
+  subtitle     String?
+  roundLabel   String?
+  description  String?
+  criteria     Json?
+  isActive     Boolean         @default(true)
+  startsAt     DateTime?
+  endsAt       DateTime?
+  nominees     PcaNominee[]
+  votes        PcaVote[]
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@index([sport, season, isActive])
+  @@index([categoryType])
+}
+
+model PcaNominee {
+  id         String      @id @default(cuid())
+  categoryId String
+  category   PcaCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  name       String
+  team       String?
+  country    String?
+  position   String?
+  imageUrl   String?
+  videoUrl   String?
+  stats      Json?
+  voteCount  Int         @default(0)
+  sortOrder  Int         @default(0)
+  votes      PcaVote[]
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@index([categoryId, voteCount])
+  @@index([sortOrder])
+}
+
+model PcaVote {
+  id         String      @id @default(cuid())
+  userId     String
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  categoryId String
+  category   PcaCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  nomineeId  String
+  nominee    PcaNominee  @relation(fields: [nomineeId], references: [id], onDelete: Cascade)
+  votes      Int         @default(1)
+  createdAt  DateTime    @default(now())
+
+  @@index([userId, createdAt])
+  @@index([categoryId])
+  @@index([nomineeId])
 }
 
 model Payment {

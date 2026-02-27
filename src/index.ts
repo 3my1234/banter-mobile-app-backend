@@ -24,6 +24,8 @@ import paymentRoutes from './payment/routes';
 import mediaRoutes from './media/routes';
 import opsRoutes from './ops/routes';
 import notificationRoutes from './notification/routes';
+import adminRoutes from './admin/routes';
+import pcaRoutes from './pca/routes';
 
 dotenv.config();
 
@@ -43,10 +45,27 @@ export const prisma = new PrismaClient({
 
 // Middleware
 app.use(helmet());
-app.use(cors({
-  origin: process.env.FRONTEND_URL || process.env.API_URL || '*',
-  credentials: true,
-}));
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  process.env.ADMIN_FRONTEND_URL,
+  process.env.API_URL,
+  'http://localhost:19006',
+  'http://localhost:8081',
+  'http://localhost:5173',
+].filter(Boolean) as string[];
+
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.length === 0 || allowedOrigins.includes(origin)) {
+        return callback(null, true);
+      }
+      return callback(new Error('Not allowed by CORS'));
+    },
+    credentials: true,
+  })
+);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -93,6 +112,8 @@ app.use('/api/tags', tagRoutes); // Public endpoint
 app.use('/api/leagues', leagueRoutes); // Public endpoint
 app.use('/api/users', jwtAuthMiddleware, userRoutes);
 app.use('/api/notifications', jwtAuthMiddleware, notificationRoutes);
+app.use('/api/pca', jwtAuthMiddleware, pcaRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Error handling
 app.use(errorHandler);
