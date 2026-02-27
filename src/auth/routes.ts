@@ -6,12 +6,24 @@ import { logger } from '../utils/logger';
 import { AppError } from '../utils/errorHandler';
 import { generateToken } from './jwt';
 import { PrivyClient } from '@privy-io/server-auth';
+import { createNotification } from '../notification/service';
 
 const router = Router();
 const privyClient = new PrivyClient(
   process.env.PRIVY_APP_ID || '',
   process.env.PRIVY_APP_SECRET || ''
 );
+const DAILY_ROL_REWARD_RAW = BigInt(10000); // 0.0001 ROL (8 decimals)
+
+const getLocalDayStart = (date: Date) =>
+  new Date(date.getFullYear(), date.getMonth(), date.getDate());
+
+const getLocalDayKey = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
 
 const mapPrivyWallets = (linkedAccounts: any[] = []) => {
   const wallets: Array<{
@@ -151,6 +163,11 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
     const movementWallet = selectedWallets.movement || undefined;
     const solanaWallet = selectedWallets.solana || undefined;
 
+    const now = new Date();
+    const localDayStart = getLocalDayStart(now);
+    const dayKey = getLocalDayKey(now);
+    let dailyRolAwarded = false;
+
     const user = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const syncedUser = await tx.user.upsert({
         where: { email },
@@ -202,8 +219,41 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
         });
       }
 
+      const rewardUpdate = await tx.user.updateMany({
+        where: {
+          id: syncedUser.id,
+          OR: [{ lastDailyRolAt: null }, { lastDailyRolAt: { lt: localDayStart } }],
+        },
+        data: {
+          lastDailyRolAt: now,
+          rolBalanceRaw: {
+            increment: DAILY_ROL_REWARD_RAW,
+          },
+        },
+      });
+      dailyRolAwarded = rewardUpdate.count > 0;
+      logger.info('Daily ROL check (privy verify)', {
+        userId: syncedUser.id,
+        awarded: dailyRolAwarded,
+        localDayStart: localDayStart.toISOString(),
+      });
+
       return syncedUser;
     });
+
+    if (dailyRolAwarded) {
+      await createNotification({
+        userId: user.id,
+        type: 'DAILY_ROL',
+        title: 'Daily ROL received',
+        body: 'You received 0.0001 ROL for today login.',
+        data: {
+          amountRaw: DAILY_ROL_REWARD_RAW.toString(),
+          amountDisplay: '0.0001',
+        },
+        reference: `daily_rol:${user.id}:${dayKey}`,
+      });
+    }
 
     const refreshedUser = await prisma.user.findUnique({
       where: { id: user.id },
@@ -213,6 +263,8 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
         displayName: true,
         movementAddress: true,
         solanaAddress: true,
+        rolBalanceRaw: true,
+        lastDailyRolAt: true,
       },
     });
 
@@ -229,6 +281,8 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
         displayName: refreshedUser.displayName,
         movementAddress: refreshedUser.movementAddress,
         solanaAddress: refreshedUser.solanaAddress,
+        rolBalanceRaw: refreshedUser.rolBalanceRaw.toString(),
+        lastDailyRolAt: refreshedUser.lastDailyRolAt,
       },
     });
   } catch (error) {
@@ -302,6 +356,40 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
 
     if (!user) {
       throw new AppError('User not found', 404);
+    }
+
+    const now = new Date();
+    const localDayStart = getLocalDayStart(now);
+    const dayKey = getLocalDayKey(now);
+    const rewardUpdate = await prisma.user.updateMany({
+      where: {
+        id: user.id,
+        OR: [{ lastDailyRolAt: null }, { lastDailyRolAt: { lt: localDayStart } }],
+      },
+      data: {
+        lastDailyRolAt: now,
+        rolBalanceRaw: {
+          increment: DAILY_ROL_REWARD_RAW,
+        },
+      },
+    });
+    logger.info('Daily ROL check (login)', {
+      userId: user.id,
+      awarded: rewardUpdate.count > 0,
+      localDayStart: localDayStart.toISOString(),
+    });
+    if (rewardUpdate.count > 0) {
+      await createNotification({
+        userId: user.id,
+        type: 'DAILY_ROL',
+        title: 'Daily ROL received',
+        body: 'You received 0.0001 ROL for today login.',
+        data: {
+          amountRaw: DAILY_ROL_REWARD_RAW.toString(),
+          amountDisplay: '0.0001',
+        },
+        reference: `daily_rol:${user.id}:${dayKey}`,
+      });
     }
 
     const token = generateToken(user.id, user.email || '');
@@ -464,6 +552,47 @@ router.get('/me', jwtAuthMiddleware, async (req: Request, res: Response): Promis
       throw new AppError('User not found', 404);
     }
 
+    const now = new Date();
+    const localDayStart = getLocalDayStart(now);
+    const dayKey = getLocalDayKey(now);
+    const rewardUpdate = await prisma.user.updateMany({
+      where: {
+        id: user.id,
+        OR: [{ lastDailyRolAt: null }, { lastDailyRolAt: { lt: localDayStart } }],
+      },
+      data: {
+        lastDailyRolAt: now,
+        rolBalanceRaw: {
+          increment: DAILY_ROL_REWARD_RAW,
+        },
+      },
+    });
+    logger.info('Daily ROL check (/me)', {
+      userId: user.id,
+      awarded: rewardUpdate.count > 0,
+      localDayStart: localDayStart.toISOString(),
+      previousRolRaw: user.rolBalanceRaw.toString(),
+    });
+
+    let effectiveRolBalanceRaw = user.rolBalanceRaw;
+    let effectiveLastDailyRolAt = user.lastDailyRolAt;
+
+    if (rewardUpdate.count > 0) {
+      effectiveRolBalanceRaw = user.rolBalanceRaw + DAILY_ROL_REWARD_RAW;
+      effectiveLastDailyRolAt = now;
+      await createNotification({
+        userId: user.id,
+        type: 'DAILY_ROL',
+        title: 'Daily ROL received',
+        body: 'You received 0.0001 ROL for today login.',
+        data: {
+          amountRaw: DAILY_ROL_REWARD_RAW.toString(),
+          amountDisplay: '0.0001',
+        },
+        reference: `daily_rol:${user.id}:${dayKey}`,
+      });
+    }
+
     res.json({
       success: true,
       user: {
@@ -474,6 +603,8 @@ router.get('/me', jwtAuthMiddleware, async (req: Request, res: Response): Promis
         solanaAddress: user.solanaAddress,
         movementAddress: user.movementAddress,
         voteBalance: user.voteBalance,
+        rolBalanceRaw: effectiveRolBalanceRaw.toString(),
+        lastDailyRolAt: effectiveLastDailyRolAt,
         avatarUrl: user.avatarUrl,
         bannerUrl: user.bannerUrl,
         bio: user.bio,

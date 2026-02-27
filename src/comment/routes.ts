@@ -3,6 +3,7 @@ import { prisma } from '../index';
 import { logger } from '../utils/logger';
 import { getIO } from '../websocket/socket';
 import { jwtAuthMiddleware } from '../auth/jwtMiddleware';
+import { createNotification } from '../notification/service';
 
 const router = Router();
 
@@ -114,11 +115,11 @@ router.post('/', async (req: Request, res: Response): Promise<Response | void> =
       return res.status(400).json({ success: false, message: 'Cannot comment on inactive post' });
     }
 
-    let parent: { id: string; postId: string; parentId: string | null } | null = null;
+    let parent: { id: string; postId: string; parentId: string | null; userId: string } | null = null;
     if (parentId) {
       parent = await prisma.comment.findUnique({
         where: { id: parentId },
-        select: { id: true, postId: true, parentId: true },
+        select: { id: true, postId: true, parentId: true, userId: true },
       });
 
       if (!parent) {
@@ -154,6 +155,44 @@ router.post('/', async (req: Request, res: Response): Promise<Response | void> =
     });
 
     logger.info(`Created comment ${comment.id} on post ${postId} by user ${user.id}`);
+
+    const actorName = user.displayName || user.username || 'Someone';
+    if (parent && parent.userId !== user.id) {
+      try {
+        await createNotification({
+          userId: parent.userId,
+          type: 'COMMENT_REPLY',
+          title: `${actorName} replied to your comment`,
+          body: comment.content,
+          data: {
+            postId,
+            commentId: comment.id,
+            parentCommentId: parent.id,
+            actorUserId: user.id,
+          },
+          reference: `reply:${comment.id}:${parent.userId}`,
+        });
+      } catch (error) {
+        logger.warn('Failed to send reply notification', { error, commentId: comment.id });
+      }
+    } else if (!parent && post.userId !== user.id) {
+      try {
+        await createNotification({
+          userId: post.userId,
+          type: 'COMMENT_REPLY',
+          title: `${actorName} commented on your post`,
+          body: comment.content,
+          data: {
+            postId,
+            commentId: comment.id,
+            actorUserId: user.id,
+          },
+          reference: `comment:${comment.id}:${post.userId}`,
+        });
+      } catch (error) {
+        logger.warn('Failed to send post comment notification', { error, commentId: comment.id });
+      }
+    }
 
     const commentCount = await prisma.comment.count({
       where: { postId },

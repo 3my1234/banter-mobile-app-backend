@@ -9,6 +9,7 @@ import {
   verifyFlutterwavePayment,
   findFlutterwaveTransactionByRef,
 } from './flutterwave';
+import { createNotification } from '../notification/service';
 
 const router = Router();
 
@@ -243,6 +244,31 @@ const findFlutterwavePaymentByRef = async (txRef: string) => {
   return recent.find((payment) => (payment.metadata as any)?.txRef === txRef) || null;
 };
 
+const notifyVotePurchaseCompleted = async (payment: {
+  id: string;
+  userId: string;
+  amount: number;
+  currency: string;
+  chain: string;
+  metadata: any;
+}) => {
+  const votes = Number(payment?.metadata?.votes || 0);
+  await createNotification({
+    userId: payment.userId,
+    type: 'VOTE_PURCHASE',
+    title: 'Vote purchase successful',
+    body: `You received ${votes} vote${votes === 1 ? '' : 's'} for ${payment.amount} ${payment.currency}.`,
+    data: {
+      paymentId: payment.id,
+      chain: payment.chain,
+      amount: payment.amount,
+      currency: payment.currency,
+      votes,
+    },
+    reference: `vote_purchase:${payment.id}`,
+  });
+};
+
 const finalizeFlutterwaveVotePayment = async (opts: {
   payment: any;
   transactionId?: string;
@@ -312,6 +338,8 @@ const finalizeFlutterwaveVotePayment = async (opts: {
 
     return updatedPayment;
   });
+
+  await notifyVotePurchaseCompleted(updated as any);
 
   return { payment: updated, transactionId: String(resolvedTransactionId) };
 };
@@ -878,6 +906,8 @@ router.post('/movement/votes/verify', async (req: Request, res: Response): Promi
       return updatedPayment;
     });
 
+    await notifyVotePurchaseCompleted(updated as any);
+
     return res.json({ success: true, payment: updated });
   } catch (error) {
     logger.error('Verify Movement vote payment error', { error });
@@ -1080,6 +1110,8 @@ router.post('/solana/votes/verify', async (req: Request, res: Response): Promise
 
       return updatedPayment;
     });
+
+    await notifyVotePurchaseCompleted(updated as any);
 
     return res.json({ success: true, payment: updated });
   } catch (error) {

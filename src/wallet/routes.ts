@@ -4,6 +4,7 @@ import { logger } from '../utils/logger';
 import { AppError } from '../utils/errorHandler';
 import { syncMovementBalance, syncSolanaBalance } from './balanceIndexer';
 import axios from 'axios';
+import { createNotification } from '../notification/service';
 
 const router = Router();
 const MOVEMENT_INDEXER_URL = process.env.MOVEMENT_INDEXER_URL || 'https://indexer.testnet.movementnetwork.xyz/v1/graphql';
@@ -12,6 +13,58 @@ const MOVEMENT_TESTNET_RPC_FALLBACK = process.env.MOVEMENT_TESTNET_RPC_FALLBACK 
 const MOVEMENT_RPC_URL = process.env.MOVEMENT_RPC_URL || '';
 const MOVEMENT_USDC_ADDRESS = (process.env.MOVEMENT_USDC_ADDRESS || '').trim().replace(/[>\s]+$/g, '');
 const MOVEMENT_NATIVE_TOKEN = '0x1::aptos_coin::AptosCoin';
+const toRawBigInt = (value: string | null | undefined) => {
+  try {
+    return BigInt(value || '0');
+  } catch {
+    return BigInt(0);
+  }
+};
+
+const formatAmount = (raw: string, decimals: number) => {
+  const amount = Number(raw || '0');
+  if (!Number.isFinite(amount)) return raw;
+  return (amount / 10 ** decimals).toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: Math.min(decimals, 6),
+  });
+};
+
+const notifyWalletTransaction = async (params: {
+  userId: string;
+  txHash: string;
+  txType: string;
+  tokenSymbol: string;
+  amount: string;
+  decimals?: number;
+}) => {
+  const type = (params.txType || '').toUpperCase();
+  const isReceive =
+    type.includes('DEPOSIT') || type.includes('CREDIT') || type.includes('RECEIVE');
+  const isTransferOut =
+    type.includes('WITHDRAW') || type.includes('DEBIT') || type.includes('TRANSFER');
+  if (!isReceive && !isTransferOut) {
+    return;
+  }
+
+  const decimals = typeof params.decimals === 'number' ? params.decimals : 6;
+  const amountDisplay = formatAmount(params.amount, decimals);
+  const token = params.tokenSymbol || 'TOKEN';
+
+  await createNotification({
+    userId: params.userId,
+    type: isReceive ? 'WALLET_RECEIVE' : 'WALLET_TRANSFER',
+    title: isReceive ? 'Wallet credited' : 'Wallet transfer sent',
+    body: `${isReceive ? '+' : '-'}${amountDisplay} ${token}`,
+    data: {
+      txHash: params.txHash,
+      txType: params.txType,
+      tokenSymbol: token,
+      amountRaw: params.amount,
+    },
+    reference: `wallet_tx:${params.userId}:${params.txHash}:${isReceive ? 'in' : 'out'}`,
+  });
+};
 
 const getMovementRpcUrls = () => {
   const urls = [MOVEMENT_RPC_URL, MOVEMENT_TESTNET_RPC, MOVEMENT_TESTNET_RPC_FALLBACK]
@@ -232,7 +285,7 @@ router.get('/balances', async (req: Request, res: Response) => {
 
     // Format balances for frontend
     const balances: Record<string, unknown> = {
-      ROL: { balance: '0', balanceUsd: null, decimals: 8 },
+      ROL: { balance: user.rolBalanceRaw.toString(), balanceUsd: null, decimals: 8 },
       SOL: { balance: '0', balanceUsd: null, decimals: 9 },
       USDC: { balance: '0', balanceUsd: null, decimals: 6 },
     };
@@ -243,9 +296,13 @@ router.get('/balances', async (req: Request, res: Response) => {
         const symbol = balance.tokenSymbol.toUpperCase();
         if (symbol === 'ROL' || symbol === 'SOL' || symbol === 'USDC' || symbol === 'USDC.E') {
           const key = symbol === 'USDC.E' ? 'USDC' : symbol;
-          const existingBalanceData = balances[key] as { balance: string; balanceUsd: number | null; decimals: number };
-          const existingBalance = parseFloat(existingBalanceData.balance) || 0;
-          const newBalance = parseFloat(balance.balance) || 0;
+          const existingBalanceData = balances[key] as {
+            balance: string;
+            balanceUsd: number | null;
+            decimals: number;
+          };
+          const existingBalance = toRawBigInt(existingBalanceData.balance);
+          const newBalance = toRawBigInt(balance.balance);
           balances[key] = {
             balance: (existingBalance + newBalance).toString(),
             balanceUsd: balance.balanceUsd,
@@ -373,7 +430,7 @@ router.get('/transactions', async (req: Request, res: Response) => {
     }
 
     const includeIndexer = req.query.includeIndexer === '1';
-    const syncIndexer = req.query.sync === '1';
+    const syncIndexer = req.query.sync === '1' || includeIndexer;
 
     const [transactions, total] = await Promise.all([
       prisma.walletTransaction.findMany({
@@ -467,9 +524,16 @@ router.get('/transactions', async (req: Request, res: Response) => {
     if (syncIndexer && indexerTransactions.length > 0) {
       for (const txItem of indexerTransactions) {
         try {
-          await prisma.walletTransaction.upsert({
+          const existing = await prisma.walletTransaction.findUnique({
             where: { txHash: txItem.txHash },
-            create: {
+            select: { id: true },
+          });
+          if (existing) {
+            continue;
+          }
+
+          await prisma.walletTransaction.create({
+            data: {
               walletId: txItem.walletId,
               txHash: txItem.txHash,
               txType: txItem.txType,
@@ -482,7 +546,15 @@ router.get('/transactions', async (req: Request, res: Response) => {
               description: 'Indexed Movement transaction',
               metadata: { source: 'indexer', decimals: txItem.metadata?.decimals },
             },
-            update: {},
+          });
+
+          await notifyWalletTransaction({
+            userId,
+            txHash: txItem.txHash,
+            txType: txItem.txType,
+            tokenSymbol: txItem.tokenSymbol,
+            amount: txItem.amount,
+            decimals: txItem.metadata?.decimals,
           });
         } catch {
           // ignore duplicates or invalid

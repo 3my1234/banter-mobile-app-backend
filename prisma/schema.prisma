@@ -28,6 +28,8 @@ model User {
   dateOfBirth     DateTime?
   clubs           String[] @default([])
   voteBalance     Int      @default(0)
+  rolBalanceRaw   BigInt   @default(0) // Off-chain ROL rewards, raw units (8 decimals)
+  lastDailyRolAt  DateTime?
   
   // Relations
   wallets         Wallet[]
@@ -36,6 +38,7 @@ model User {
   comments        Comment[]
   reactions       Reaction[]
   payments        Payment[]
+  notifications   Notification[]
   followers       Follow[] @relation("UserFollowers")
   following       Follow[] @relation("UserFollowing")
   
@@ -348,6 +351,32 @@ enum PaymentChain {
 enum PaymentType {
   VOTE_PURCHASE
   OTHER
+}
+
+enum NotificationType {
+  SYSTEM
+  VOTE_PURCHASE
+  WALLET_RECEIVE
+  WALLET_TRANSFER
+  COMMENT_REPLY
+  DAILY_ROL
+  XP
+}
+
+model Notification {
+  id          String           @id @default(cuid())
+  userId      String
+  user        User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        NotificationType
+  title       String
+  body        String?
+  data        Json?
+  reference   String?          @unique
+  readAt      DateTime?
+  createdAt   DateTime         @default(now())
+
+  @@index([userId, createdAt])
+  @@index([type])
 }
 
 model Payment {
