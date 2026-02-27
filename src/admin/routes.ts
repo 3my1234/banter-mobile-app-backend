@@ -412,6 +412,26 @@ router.patch('/pca/categories/:id', async (req: Request, res: Response): Promise
 });
 
 /**
+ * DELETE /api/admin/pca/categories/:id
+ */
+router.delete('/pca/categories/:id', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = req.params.id;
+    await prisma.pcaCategory.delete({ where: { id } });
+    res.json({ success: true });
+    return;
+  } catch (error) {
+    logger.error('Admin PCA category delete error', { error });
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({ success: false, message: error.message });
+      return;
+    }
+    res.status(500).json({ success: false, message: 'Failed to delete PCA category' });
+    return;
+  }
+});
+
+/**
  * POST /api/admin/pca/categories/:categoryId/nominees
  */
 router.post('/pca/categories/:categoryId/nominees', async (req: Request, res: Response): Promise<void> => {
