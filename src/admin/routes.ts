@@ -1,11 +1,44 @@
 import { Router, Request, Response } from 'express';
 import { PcaCategoryType, PcaSport, Prisma } from '@prisma/client';
+import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import { prisma } from '../index';
 import { AppError } from '../utils/errorHandler';
 import { logger } from '../utils/logger';
 import { adminAuthMiddleware, generateAdminToken } from './auth';
 
 const router = Router();
+
+const s3Client = new S3Client({
+  region: process.env.AWS_REGION || 'eu-north-1',
+  credentials: {
+    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
+    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
+  },
+  requestChecksumCalculation: 'NEVER' as any,
+} as any);
+
+const BUCKET_NAME = process.env.S3_BUCKET_NAME || process.env.AWS_S3_BUCKET_NAME || 'banter-uploads';
+const CDN_BASE = process.env.ASSETS_CDN_BASE || process.env.CLOUDFRONT_DOMAIN;
+
+const normalizeBaseUrl = (value?: string): string | null => {
+  if (!value) return null;
+  const trimmed = value.trim().replace(/\/+$/, '');
+  if (!trimmed) return null;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  return `https://${trimmed}`;
+};
+
+const CDN_BASE_URL = normalizeBaseUrl(CDN_BASE);
+
+const getPublicUrl = (key: string): string => {
+  if (CDN_BASE_URL) {
+    const normalizedKey = key.startsWith('/') ? key.substring(1) : key;
+    return `${CDN_BASE_URL}/${normalizedKey}`;
+  }
+  const region = process.env.AWS_REGION || 'eu-north-1';
+  return `https://${BUCKET_NAME}.s3.${region}.amazonaws.com/${key}`;
+};
 
 const parseSport = (value?: string): PcaSport => {
   const normalized = String(value || '').trim().toUpperCase();
@@ -94,6 +127,56 @@ router.post('/auth/login', async (req: Request, res: Response): Promise<void> =>
 });
 
 router.use(adminAuthMiddleware);
+
+/**
+ * POST /api/admin/uploads/presign
+ * Generate presigned upload URL for PCA assets.
+ */
+router.post('/uploads/presign', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { filename, mimeType, kind } = req.body || {};
+    if (!filename || !mimeType) {
+      throw new AppError('filename and mimeType are required', 400);
+    }
+
+    const mime = String(mimeType).trim().toLowerCase();
+    const isImage = mime.startsWith('image/');
+    const isVideo = mime.startsWith('video/');
+    if (!isImage && !isVideo) {
+      throw new AppError('mimeType must be image/* or video/*', 400);
+    }
+
+    const assetKind = kind === 'video' || kind === 'image' ? kind : isVideo ? 'video' : 'image';
+    const safeFilename = String(filename).replace(/[^a-zA-Z0-9.-]/g, '_');
+    const timestamp = Date.now();
+    const key = `admin-uploads/pca/${assetKind}/${timestamp}_${safeFilename}`;
+
+    const putCommand = new PutObjectCommand({
+      Bucket: BUCKET_NAME,
+      Key: key,
+      ContentType: mime,
+    });
+    const uploadUrl = await getSignedUrl(s3Client, putCommand, {
+      expiresIn: 900,
+    });
+
+    res.json({
+      success: true,
+      uploadUrl,
+      key,
+      viewUrl: getPublicUrl(key),
+    });
+    return;
+  } catch (error) {
+    logger.error('Admin upload presign error', { error });
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({ success: false, message: error.message });
+      return;
+    }
+    res.status(500).json({ success: false, message: 'Failed to generate upload URL' });
+    return;
+  }
+});
 
 /**
  * GET /api/admin/overview
