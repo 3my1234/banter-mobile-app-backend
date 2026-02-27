@@ -14,14 +14,111 @@ type CreateNotificationInput = {
   reference?: string;
 };
 
+type NotificationRecord = {
+  id: string;
+  userId: string;
+  type: NotificationType;
+  title: string;
+  body: string | null;
+  data: Prisma.JsonValue | null;
+  reference: string | null;
+  readAt: Date | null;
+  createdAt: Date;
+};
+
+const toCleanString = (value: unknown) => {
+  if (typeof value !== 'string') return '';
+  return value.trim();
+};
+
+const getDataObject = (data: Prisma.JsonValue | Prisma.InputJsonValue | null | undefined) => {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return {} as Record<string, unknown>;
+  return data as Record<string, unknown>;
+};
+
+const formatFromRaw = (amountRaw: string, decimals: number) => {
+  const raw = Number(amountRaw || '0');
+  if (!Number.isFinite(raw)) return amountRaw;
+  return (raw / 10 ** decimals).toLocaleString(undefined, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: Math.min(decimals, 6),
+  });
+};
+
+export const resolveNotificationMessage = (input: {
+  type: NotificationType;
+  title: string;
+  body?: string | null;
+  data?: Prisma.JsonValue | Prisma.InputJsonValue | null;
+}) => {
+  const explicitBody = toCleanString(input.body);
+  if (explicitBody) return explicitBody;
+
+  const data = getDataObject(input.data || null);
+  const type = input.type;
+
+  if (type === 'DAILY_ROL') {
+    return 'You received your daily ROL reward.';
+  }
+
+  if (type === 'VOTE_PURCHASE') {
+    const votes = Number(data.votes || 0);
+    const amount = toCleanString(data.amount);
+    const currency = toCleanString(data.currency) || 'USD';
+    if (votes > 0 && amount) return `You received ${votes} vote${votes === 1 ? '' : 's'} for ${amount} ${currency}.`;
+    if (votes > 0) return `You received ${votes} vote${votes === 1 ? '' : 's'}.`;
+  }
+
+  if (type === 'WALLET_RECEIVE' || type === 'WALLET_TRANSFER') {
+    const amountDisplay = toCleanString(data.amountDisplay);
+    const tokenSymbol = toCleanString(data.tokenSymbol) || 'TOKEN';
+    if (amountDisplay) {
+      return `${type === 'WALLET_RECEIVE' ? '+' : '-'}${amountDisplay} ${tokenSymbol}`;
+    }
+    const raw = toCleanString(data.amountRaw);
+    const decimals = Number(data.decimals || (tokenSymbol === 'MOVE' ? 8 : 6));
+    if (raw) {
+      const display = Number.isFinite(decimals) ? formatFromRaw(raw, decimals) : raw;
+      return `${type === 'WALLET_RECEIVE' ? '+' : '-'}${display} ${tokenSymbol}`;
+    }
+  }
+
+  if (type === 'COMMENT_REPLY') {
+    return 'Someone interacted with your post/comment.';
+  }
+
+  return toCleanString(input.title) || 'New notification';
+};
+
+export const normalizeNotificationForClient = (notification: NotificationRecord) => {
+  const message = resolveNotificationMessage({
+    type: notification.type,
+    title: notification.title,
+    body: notification.body,
+    data: notification.data,
+  });
+
+  return {
+    ...notification,
+    body: message,
+    message,
+  };
+};
+
 export async function createNotification(input: CreateNotificationInput) {
   try {
+    const resolvedBody = resolveNotificationMessage({
+      type: input.type,
+      title: input.title,
+      body: input.body,
+      data: input.data,
+    });
     const created = await prisma.notification.create({
       data: {
         userId: input.userId,
         type: input.type,
         title: input.title,
-        body: input.body ?? null,
+        body: resolvedBody,
         data: input.data,
         reference: input.reference,
       },
@@ -57,19 +154,21 @@ export function emitNotificationCreated(notification: {
   readAt: Date | null;
   createdAt: Date;
 }) {
+  const normalized = normalizeNotificationForClient(notification as NotificationRecord);
   emitToUser(notification.userId, 'notifications.new', {
-    id: notification.id,
-    type: notification.type,
-    title: notification.title,
-    body: notification.body,
-    data: notification.data,
-    readAt: notification.readAt,
-    createdAt: notification.createdAt,
+    id: normalized.id,
+    type: normalized.type,
+    title: normalized.title,
+    body: normalized.body,
+    message: normalized.message,
+    data: normalized.data,
+    readAt: normalized.readAt,
+    createdAt: normalized.createdAt,
   });
 }
 
 export async function listNotifications(userId: string, unreadOnly = false, limit = 100) {
-  return prisma.notification.findMany({
+  const items = await prisma.notification.findMany({
     where: {
       userId,
       ...(unreadOnly ? { readAt: null } : {}),
@@ -77,6 +176,7 @@ export async function listNotifications(userId: string, unreadOnly = false, limi
     orderBy: { createdAt: 'desc' },
     take: Math.min(Math.max(limit, 1), 200),
   });
+  return items.map((item) => normalizeNotificationForClient(item as NotificationRecord));
 }
 
 export async function markNotificationRead(userId: string, notificationId: string) {
@@ -91,7 +191,7 @@ export async function markNotificationRead(userId: string, notificationId: strin
     data: { readAt: new Date() },
   });
   emitToUser(userId, 'notifications.read', { id: updated.id, readAt: updated.readAt });
-  return updated;
+  return normalizeNotificationForClient(updated as NotificationRecord);
 }
 
 export async function markAllNotificationsRead(userId: string) {
