@@ -146,7 +146,7 @@ router.post('/presign', async (req: Request, res: Response) => {
  * Avoids redirect edge-cases on mobile clients and private buckets.
  * Supports keys with slashes via wildcard route
  */
-router.get('/view/*', async (req: Request, res: Response) => {
+const handleViewRequest = async (req: Request, res: Response) => {
   try {
     // Extract key from wildcard param (preferred)
     let key = (req.params && (req.params as any)[0]) || '';
@@ -181,6 +181,27 @@ router.get('/view/*', async (req: Request, res: Response) => {
       }
     } catch (fileCheckError: any) {
       logger.warn(`Could not verify file existence: ${fileCheckError?.message || fileCheckError} - continuing anyway`);
+    }
+
+    if (req.method === 'HEAD') {
+      const head = await s3Client.send(
+        new HeadObjectCommand({
+          Bucket: BUCKET_NAME,
+          Key: normalizedKey,
+        })
+      );
+
+      res.status(200);
+      res.set({
+        'Cache-Control': 'public, max-age=86400',
+        'Access-Control-Allow-Origin': '*',
+        'Accept-Ranges': 'bytes',
+        ...(head.ContentType ? { 'Content-Type': head.ContentType } : {}),
+        ...(head.ContentLength != null ? { 'Content-Length': String(head.ContentLength) } : {}),
+        ...(head.ETag ? { ETag: head.ETag } : {}),
+        ...(head.LastModified ? { 'Last-Modified': head.LastModified.toUTCString() } : {}),
+      });
+      return res.end();
     }
 
     const range = req.headers.range;
@@ -225,7 +246,10 @@ router.get('/view/*', async (req: Request, res: Response) => {
       error: error?.message || 'Unknown error',
     });
   }
-});
+};
+
+router.head('/view/*', handleViewRequest);
+router.get('/view/*', handleViewRequest);
 
 /**
  * POST /api/images/save-profile-picture
