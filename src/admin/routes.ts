@@ -40,6 +40,17 @@ const getPublicUrl = (key: string): string => {
   return `https://${BUCKET_NAME}.s3.${region}.amazonaws.com/${key}`;
 };
 
+const getBackendPublicBase = (req?: Request) => {
+  const candidates = [
+    process.env.BACKEND_PUBLIC_URL,
+    process.env.API_URL,
+    req ? `${req.protocol}://${req.get('host') || ''}` : '',
+  ];
+  const picked = candidates.find((value) => typeof value === 'string' && /^https?:\/\//i.test(value));
+  if (!picked) return 'https://sportbanter.online';
+  return picked.trim().replace(/\/+$/, '').replace(/\/api$/, '');
+};
+
 const parseSport = (value?: string): PcaSport => {
   const normalized = String(value || '').trim().toUpperCase();
   if (normalized === 'SOCCER') return 'SOCCER';
@@ -165,7 +176,8 @@ router.post('/uploads/presign', async (req: Request, res: Response): Promise<voi
       success: true,
       uploadUrl,
       key,
-      viewUrl: getPublicUrl(key),
+      viewUrl: `${getBackendPublicBase(req)}/api/images/view/${key}`,
+      publicUrl: getPublicUrl(key),
     });
     return;
   } catch (error) {
