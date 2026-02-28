@@ -99,6 +99,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/wallet', jwtAuthMiddleware, walletRoutes);
 app.use('/api/posts', jwtAuthMiddleware, postRoutes);
 app.use('/api/votes', jwtAuthMiddleware, voteRoutes);
+// Public image/video view redirects (no auth headers required by RN Image/Video components)
+app.use('/api/public/images', imageRoutes);
 app.use('/api/images', jwtAuthMiddleware, imageRoutes);
 app.use('/api/comments', jwtAuthMiddleware, commentRoutes);
 app.use('/api/reactions', jwtAuthMiddleware, reactionRoutes);

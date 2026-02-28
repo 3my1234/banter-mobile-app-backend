@@ -176,7 +176,7 @@ router.post('/uploads/presign', async (req: Request, res: Response): Promise<voi
       success: true,
       uploadUrl,
       key,
-      viewUrl: `${getBackendPublicBase(req)}/api/images/view/${key}`,
+      viewUrl: `${getBackendPublicBase(req)}/api/public/images/view/${key}`,
       publicUrl: getPublicUrl(key),
     });
     return;
