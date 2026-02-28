@@ -149,7 +149,8 @@ router.post('/uploads/presign', async (req: Request, res: Response): Promise<voi
     const assetKind = kind === 'video' || kind === 'image' ? kind : isVideo ? 'video' : 'image';
     const safeFilename = String(filename).replace(/[^a-zA-Z0-9.-]/g, '_');
     const timestamp = Date.now();
-    const key = `admin-uploads/pca/${assetKind}/${timestamp}_${safeFilename}`;
+    // Reuse user-uploads prefix so existing public bucket/CDN policy also serves admin PCA media.
+    const key = `user-uploads/admin/pca/${assetKind}/${timestamp}_${safeFilename}`;
 
     const putCommand = new PutObjectCommand({
       Bucket: BUCKET_NAME,
