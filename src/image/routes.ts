@@ -22,7 +22,6 @@ const s3Client = new S3Client({
 const BUCKET_NAME = process.env.S3_BUCKET_NAME || process.env.AWS_S3_BUCKET_NAME || 'banter-uploads';
 // CDN base (custom domain or CloudFront domain). Prefer full base URL if provided.
 const CDN_BASE = process.env.ASSETS_CDN_BASE || process.env.CLOUDFRONT_DOMAIN;
-const DEFAULT_GET_TTL = 86400; // 24 hours for view URLs
 
 function normalizeBaseUrl(value?: string): string | null {
   if (!value) return null;
@@ -46,17 +45,6 @@ function getPublicUrl(key: string): string {
   // Fallback to S3 public URL
   const region = process.env.AWS_REGION || 'eu-north-1';
   return `https://${BUCKET_NAME}.s3.${region}.amazonaws.com/${key}`;
-}
-
-/**
- * Helper: Generate presigned GET URL for a key
- */
-async function getPresignedGetUrl(key: string, ttlSeconds: number = DEFAULT_GET_TTL): Promise<string> {
-  const command = new GetObjectCommand({
-    Bucket: BUCKET_NAME,
-    Key: key,
-  });
-  return await getSignedUrl(s3Client, command, { expiresIn: ttlSeconds });
 }
 
 /**
@@ -154,8 +142,8 @@ router.post('/presign', async (req: Request, res: Response) => {
 
 /**
  * GET /api/images/view/**
- * Fast image/video serving endpoint - redirects to CloudFront or generates presigned URL
- * This endpoint provides stable URLs that never expire (unlike direct S3 presigned URLs)
+ * Streams image/video bytes from S3 through backend.
+ * Avoids redirect edge-cases on mobile clients and private buckets.
  * Supports keys with slashes via wildcard route
  */
 router.get('/view/*', async (req: Request, res: Response) => {
@@ -195,27 +183,36 @@ router.get('/view/*', async (req: Request, res: Response) => {
       logger.warn(`Could not verify file existence: ${fileCheckError?.message || fileCheckError} - continuing anyway`);
     }
 
-    // Use CDN if available (fastest), otherwise generate presigned URL
-    if (CDN_BASE_URL) {
-      const cdnUrl = getPublicUrl(normalizedKey);
-      logger.debug(`✅ Using CDN URL: ${cdnUrl}`);
-      return res
-        .set({
-          'Cache-Control': 'public, max-age=86400', // 24 hours cache
-          'Access-Control-Allow-Origin': '*', // CORS for images/videos
-        })
-        .redirect(302, cdnUrl);
-    } else {
-      // Fallback: Generate presigned URL (24 hour expiration)
-      const presignedUrl = await getPresignedGetUrl(normalizedKey, DEFAULT_GET_TTL);
-      logger.debug(`✅ Using presigned S3 URL (expires in ${DEFAULT_GET_TTL}s)`);
-      return res
-        .set({
-          'Cache-Control': 'public, max-age=3600', // 1 hour cache for presigned URLs
-          'Access-Control-Allow-Origin': '*',
-        })
-        .redirect(302, presignedUrl);
+    const range = req.headers.range;
+    const object = await s3Client.send(
+      new GetObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: normalizedKey,
+        ...(range ? { Range: range } : {}),
+      })
+    );
+
+    const body = object.Body as any;
+    if (!body || typeof body.pipe !== 'function') {
+      throw new Error('S3 object body stream unavailable');
     }
+
+    const statusCode = range && object.ContentRange ? 206 : 200;
+    res.status(statusCode);
+    res.set({
+      'Cache-Control': 'public, max-age=86400',
+      'Access-Control-Allow-Origin': '*',
+      'Accept-Ranges': 'bytes',
+      ...(object.ContentType ? { 'Content-Type': object.ContentType } : {}),
+      ...(object.ContentLength != null ? { 'Content-Length': String(object.ContentLength) } : {}),
+      ...(object.ETag ? { ETag: object.ETag } : {}),
+      ...(object.LastModified ? { 'Last-Modified': object.LastModified.toUTCString() } : {}),
+      ...(object.ContentRange ? { 'Content-Range': object.ContentRange } : {}),
+    });
+
+    logger.debug(`Streaming media from S3 key: ${normalizedKey}`);
+    body.pipe(res);
+    return;
   } catch (error: any) {
     logger.error('Image view error', {
       key: req.url,
