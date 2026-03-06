@@ -58,11 +58,11 @@ export const resolveNotificationMessage = (input: {
   const type = input.type;
 
   if (type === 'DAILY_ROL') {
-    return 'You received your daily ROL reward.';
+    return 'Legacy reward entry. Daily login rewards now count as Banter Points.';
   }
 
   if (type === 'DAILY_POINTS') {
-    return 'You received your daily Banter Points reward.';
+    return 'You received your daily Banter Points reward. Open Profile > Banter Points to see how your points count toward the future airdrop.';
   }
 
   if (type === 'VOTE_PURCHASE') {
@@ -175,6 +175,7 @@ export async function listNotifications(userId: string, unreadOnly = false, limi
   const items = await prisma.notification.findMany({
     where: {
       userId,
+      type: { not: 'DAILY_ROL' },
       ...(unreadOnly ? { readAt: null } : {}),
     },
     orderBy: { createdAt: 'desc' },

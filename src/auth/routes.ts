@@ -253,8 +253,8 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
       await notifyPointsAward({
         userId: user.id,
         type: 'DAILY_POINTS',
-        title: 'Daily Banter Points received',
-        body: 'You received your daily Banter Points reward. See Profile > Banter Points for airdrop eligibility details.',
+        title: 'Daily Banter Points added',
+        body: 'You received your daily Banter Points reward. Open Profile > Banter Points to see how your points count toward the future airdrop.',
         data: {
           pointsRaw: DAILY_BANTER_POINTS_RAW.toString(),
         },
@@ -264,8 +264,8 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
     if (earlyUserAwarded) {
       await notifyPointsAward({
         userId: user.id,
-        title: 'Early user bonus received',
-        body: 'You received your one-time Early User Banter Points bonus. See Profile > Banter Points for how points count toward the future airdrop.',
+        title: 'Welcome bonus added',
+        body: 'You received your one-time welcome Banter Points bonus. Open Profile > Banter Points to see how your points count toward the future airdrop.',
         data: {
           pointsRaw: EARLY_USER_POINTS_RAW.toString(),
           rewardType: 'EARLY_USER',
@@ -390,8 +390,8 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
       await notifyPointsAward({
         userId: user.id,
         type: 'DAILY_POINTS',
-        title: 'Daily Banter Points received',
-        body: 'You received your daily Banter Points reward. See Profile > Banter Points for airdrop eligibility details.',
+        title: 'Daily Banter Points added',
+        body: 'You received your daily Banter Points reward. Open Profile > Banter Points to see how your points count toward the future airdrop.',
         data: {
           pointsRaw: DAILY_BANTER_POINTS_RAW.toString(),
         },
@@ -402,8 +402,8 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
     if (earlyUserResult.awarded) {
       await notifyPointsAward({
         userId: user.id,
-        title: 'Early user bonus received',
-        body: 'You received your one-time Early User Banter Points bonus. See Profile > Banter Points for how points count toward the future airdrop.',
+        title: 'Welcome bonus added',
+        body: 'You received your one-time welcome Banter Points bonus. Open Profile > Banter Points to see how your points count toward the future airdrop.',
         data: {
           pointsRaw: EARLY_USER_POINTS_RAW.toString(),
           rewardType: 'EARLY_USER',
@@ -535,8 +535,8 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
     if (earlyUserAwarded) {
       await notifyPointsAward({
         userId: user.id,
-        title: 'Early user bonus received',
-        body: 'You received your one-time Early User Banter Points bonus. See Profile > Banter Points for how points count toward the future airdrop.',
+        title: 'Welcome bonus added',
+        body: 'You received your one-time welcome Banter Points bonus. Open Profile > Banter Points to see how your points count toward the future airdrop.',
         data: {
           pointsRaw: EARLY_USER_POINTS_RAW.toString(),
           rewardType: 'EARLY_USER',
@@ -608,8 +608,8 @@ router.get('/me', jwtAuthMiddleware, async (req: Request, res: Response): Promis
       await notifyPointsAward({
         userId: user.id,
         type: 'DAILY_POINTS',
-        title: 'Daily Banter Points received',
-        body: 'You received your daily Banter Points reward. See Profile > Banter Points for airdrop eligibility details.',
+        title: 'Daily Banter Points added',
+        body: 'You received your daily Banter Points reward. Open Profile > Banter Points to see how your points count toward the future airdrop.',
         data: {
           pointsRaw: DAILY_BANTER_POINTS_RAW.toString(),
         },
@@ -621,8 +621,8 @@ router.get('/me', jwtAuthMiddleware, async (req: Request, res: Response): Promis
       effectiveBanterPointsRaw = effectiveBanterPointsRaw + EARLY_USER_POINTS_RAW;
       await notifyPointsAward({
         userId: user.id,
-        title: 'Early user bonus received',
-        body: 'You received your one-time Early User Banter Points bonus. See Profile > Banter Points for how points count toward the future airdrop.',
+        title: 'Welcome bonus added',
+        body: 'You received your one-time welcome Banter Points bonus. Open Profile > Banter Points to see how your points count toward the future airdrop.',
         data: {
           pointsRaw: EARLY_USER_POINTS_RAW.toString(),
           rewardType: 'EARLY_USER',
