@@ -61,6 +61,10 @@ export const resolveNotificationMessage = (input: {
     return 'You received your daily ROL reward.';
   }
 
+  if (type === 'DAILY_POINTS') {
+    return 'You received your daily Banter Points reward.';
+  }
+
   if (type === 'VOTE_PURCHASE') {
     const votes = Number(data.votes || 0);
     const amount = toCleanString(data.amount);

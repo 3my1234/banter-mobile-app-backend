@@ -7,23 +7,18 @@ import { AppError } from '../utils/errorHandler';
 import { generateToken } from './jwt';
 import { PrivyClient } from '@privy-io/server-auth';
 import { createNotification } from '../notification/service';
+import {
+  DAILY_BANTER_POINTS_RAW,
+  EARLY_USER_POINTS_RAW,
+  awardDailyLoginPoints,
+  awardEarlyUserPoints,
+} from '../points/service';
 
 const router = Router();
 const privyClient = new PrivyClient(
   process.env.PRIVY_APP_ID || '',
   process.env.PRIVY_APP_SECRET || ''
 );
-const DAILY_ROL_REWARD_RAW = BigInt(10000); // 0.0001 ROL (8 decimals)
-
-const getLocalDayStart = (date: Date) =>
-  new Date(date.getFullYear(), date.getMonth(), date.getDate());
-
-const getLocalDayKey = (date: Date) => {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${year}-${month}-${day}`;
-};
 
 const mapPrivyWallets = (linkedAccounts: any[] = []) => {
   const wallets: Array<{
@@ -77,6 +72,24 @@ const mapPrivyWallets = (linkedAccounts: any[] = []) => {
   }
 
   return wallets;
+};
+
+const notifyPointsAward = async (input: {
+  userId: string;
+  reference: string;
+  title: string;
+  body: string;
+  data: Record<string, string>;
+  type?: 'DAILY_POINTS' | 'SYSTEM';
+}) => {
+  await createNotification({
+    userId: input.userId,
+    type: input.type || 'SYSTEM',
+    title: input.title,
+    body: input.body,
+    data: input.data,
+    reference: input.reference,
+  });
 };
 
 const pickPrimaryWalletsByChain = (
@@ -164,9 +177,10 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
     const solanaWallet = selectedWallets.solana || undefined;
 
     const now = new Date();
-    const localDayStart = getLocalDayStart(now);
-    const dayKey = getLocalDayKey(now);
-    let dailyRolAwarded = false;
+    let dailyPointsAwarded = false;
+    let dailyPointsReference = '';
+    let earlyUserAwarded = false;
+    let earlyUserReference = '';
 
     const user = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const syncedUser = await tx.user.upsert({
@@ -219,39 +233,44 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
         });
       }
 
-      const rewardUpdate = await tx.user.updateMany({
-        where: {
-          id: syncedUser.id,
-          OR: [{ lastDailyRolAt: null }, { lastDailyRolAt: { lt: localDayStart } }],
-        },
-        data: {
-          lastDailyRolAt: now,
-          rolBalanceRaw: {
-            increment: DAILY_ROL_REWARD_RAW,
-          },
-        },
-      });
-      dailyRolAwarded = rewardUpdate.count > 0;
-      logger.info('Daily ROL check (privy verify)', {
+      const rewardResult = await awardDailyLoginPoints(tx, syncedUser.id, now);
+      dailyPointsAwarded = rewardResult.awarded;
+      dailyPointsReference = rewardResult.reference;
+      logger.info('Daily points check (privy verify)', {
         userId: syncedUser.id,
-        awarded: dailyRolAwarded,
-        localDayStart: localDayStart.toISOString(),
+        awarded: dailyPointsAwarded,
+        localDayStart: rewardResult.localDayStart.toISOString(),
       });
+
+      const earlyUserResult = await awardEarlyUserPoints(tx, syncedUser);
+      earlyUserAwarded = earlyUserResult.awarded;
+      earlyUserReference = earlyUserResult.reference;
 
       return syncedUser;
     });
 
-    if (dailyRolAwarded) {
-      await createNotification({
+    if (dailyPointsAwarded) {
+      await notifyPointsAward({
         userId: user.id,
-        type: 'DAILY_ROL',
-        title: 'Daily ROL received',
-        body: 'You received 0.0001 ROL for today login.',
+        type: 'DAILY_POINTS',
+        title: 'Daily Banter Points received',
+        body: 'You received your daily Banter Points reward.',
         data: {
-          amountRaw: DAILY_ROL_REWARD_RAW.toString(),
-          amountDisplay: '0.0001',
+          pointsRaw: DAILY_BANTER_POINTS_RAW.toString(),
         },
-        reference: `daily_rol:${user.id}:${dayKey}`,
+        reference: dailyPointsReference,
+      });
+    }
+    if (earlyUserAwarded) {
+      await notifyPointsAward({
+        userId: user.id,
+        title: 'Early user bonus received',
+        body: 'You received your one-time Early User Banter Points bonus.',
+        data: {
+          pointsRaw: EARLY_USER_POINTS_RAW.toString(),
+          rewardType: 'EARLY_USER',
+        },
+        reference: earlyUserReference,
       });
     }
 
@@ -264,7 +283,8 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
         movementAddress: true,
         solanaAddress: true,
         rolBalanceRaw: true,
-        lastDailyRolAt: true,
+        banterPointsRaw: true,
+        lastDailyPointsAt: true,
       },
     });
 
@@ -282,7 +302,8 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
         movementAddress: refreshedUser.movementAddress,
         solanaAddress: refreshedUser.solanaAddress,
         rolBalanceRaw: refreshedUser.rolBalanceRaw.toString(),
-        lastDailyRolAt: refreshedUser.lastDailyRolAt,
+        banterPointsRaw: refreshedUser.banterPointsRaw.toString(),
+        lastDailyPointsAt: refreshedUser.lastDailyPointsAt,
       },
     });
   } catch (error) {
@@ -359,36 +380,35 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
     }
 
     const now = new Date();
-    const localDayStart = getLocalDayStart(now);
-    const dayKey = getLocalDayKey(now);
-    const rewardUpdate = await prisma.user.updateMany({
-      where: {
-        id: user.id,
-        OR: [{ lastDailyRolAt: null }, { lastDailyRolAt: { lt: localDayStart } }],
-      },
-      data: {
-        lastDailyRolAt: now,
-        rolBalanceRaw: {
-          increment: DAILY_ROL_REWARD_RAW,
-        },
-      },
-    });
-    logger.info('Daily ROL check (login)', {
+    const rewardResult = await prisma.$transaction((tx) => awardDailyLoginPoints(tx, user.id, now));
+    logger.info('Daily points check (login)', {
       userId: user.id,
-      awarded: rewardUpdate.count > 0,
-      localDayStart: localDayStart.toISOString(),
+      awarded: rewardResult.awarded,
+      localDayStart: rewardResult.localDayStart.toISOString(),
     });
-    if (rewardUpdate.count > 0) {
-      await createNotification({
+    if (rewardResult.awarded) {
+      await notifyPointsAward({
         userId: user.id,
-        type: 'DAILY_ROL',
-        title: 'Daily ROL received',
-        body: 'You received 0.0001 ROL for today login.',
+        type: 'DAILY_POINTS',
+        title: 'Daily Banter Points received',
+        body: 'You received your daily Banter Points reward.',
         data: {
-          amountRaw: DAILY_ROL_REWARD_RAW.toString(),
-          amountDisplay: '0.0001',
+          pointsRaw: DAILY_BANTER_POINTS_RAW.toString(),
         },
-        reference: `daily_rol:${user.id}:${dayKey}`,
+        reference: rewardResult.reference,
+      });
+    }
+    const earlyUserResult = await prisma.$transaction((tx) => awardEarlyUserPoints(tx, user));
+    if (earlyUserResult.awarded) {
+      await notifyPointsAward({
+        userId: user.id,
+        title: 'Early user bonus received',
+        body: 'You received your one-time Early User Banter Points bonus.',
+        data: {
+          pointsRaw: EARLY_USER_POINTS_RAW.toString(),
+          rewardType: 'EARLY_USER',
+        },
+        reference: earlyUserResult.reference,
       });
     }
 
@@ -470,6 +490,8 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
     }
 
     // Create new user
+    let earlyUserAwarded = false;
+    let earlyUserReference = '';
     const user = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       const createdUser = await tx.user.create({
         data: {
@@ -502,10 +524,26 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
         ],
       });
 
+      const earlyUserResult = await awardEarlyUserPoints(tx, createdUser);
+      earlyUserAwarded = earlyUserResult.awarded;
+      earlyUserReference = earlyUserResult.reference;
+
       return createdUser;
     });
 
     logger.info(`Created new user: ${user.id}`);
+    if (earlyUserAwarded) {
+      await notifyPointsAward({
+        userId: user.id,
+        title: 'Early user bonus received',
+        body: 'You received your one-time Early User Banter Points bonus.',
+        data: {
+          pointsRaw: EARLY_USER_POINTS_RAW.toString(),
+          rewardType: 'EARLY_USER',
+        },
+        reference: earlyUserReference,
+      });
+    }
 
     // Generate token
     const token = generateToken(user.id, user.email || '');
@@ -553,43 +591,43 @@ router.get('/me', jwtAuthMiddleware, async (req: Request, res: Response): Promis
     }
 
     const now = new Date();
-    const localDayStart = getLocalDayStart(now);
-    const dayKey = getLocalDayKey(now);
-    const rewardUpdate = await prisma.user.updateMany({
-      where: {
-        id: user.id,
-        OR: [{ lastDailyRolAt: null }, { lastDailyRolAt: { lt: localDayStart } }],
-      },
-      data: {
-        lastDailyRolAt: now,
-        rolBalanceRaw: {
-          increment: DAILY_ROL_REWARD_RAW,
-        },
-      },
-    });
-    logger.info('Daily ROL check (/me)', {
+    const rewardResult = await prisma.$transaction((tx) => awardDailyLoginPoints(tx, user.id, now));
+    logger.info('Daily points check (/me)', {
       userId: user.id,
-      awarded: rewardUpdate.count > 0,
-      localDayStart: localDayStart.toISOString(),
-      previousRolRaw: user.rolBalanceRaw.toString(),
+      awarded: rewardResult.awarded,
+      localDayStart: rewardResult.localDayStart.toISOString(),
+      previousPointsRaw: user.banterPointsRaw.toString(),
     });
 
-    let effectiveRolBalanceRaw = user.rolBalanceRaw;
-    let effectiveLastDailyRolAt = user.lastDailyRolAt;
+    let effectiveBanterPointsRaw = user.banterPointsRaw;
+    let effectiveLastDailyPointsAt = user.lastDailyPointsAt;
 
-    if (rewardUpdate.count > 0) {
-      effectiveRolBalanceRaw = user.rolBalanceRaw + DAILY_ROL_REWARD_RAW;
-      effectiveLastDailyRolAt = now;
-      await createNotification({
+    if (rewardResult.awarded) {
+      effectiveBanterPointsRaw = user.banterPointsRaw + DAILY_BANTER_POINTS_RAW;
+      effectiveLastDailyPointsAt = now;
+      await notifyPointsAward({
         userId: user.id,
-        type: 'DAILY_ROL',
-        title: 'Daily ROL received',
-        body: 'You received 0.0001 ROL for today login.',
+        type: 'DAILY_POINTS',
+        title: 'Daily Banter Points received',
+        body: 'You received your daily Banter Points reward.',
         data: {
-          amountRaw: DAILY_ROL_REWARD_RAW.toString(),
-          amountDisplay: '0.0001',
+          pointsRaw: DAILY_BANTER_POINTS_RAW.toString(),
         },
-        reference: `daily_rol:${user.id}:${dayKey}`,
+        reference: rewardResult.reference,
+      });
+    }
+    const earlyUserResult = await prisma.$transaction((tx) => awardEarlyUserPoints(tx, user));
+    if (earlyUserResult.awarded) {
+      effectiveBanterPointsRaw = effectiveBanterPointsRaw + EARLY_USER_POINTS_RAW;
+      await notifyPointsAward({
+        userId: user.id,
+        title: 'Early user bonus received',
+        body: 'You received your one-time Early User Banter Points bonus.',
+        data: {
+          pointsRaw: EARLY_USER_POINTS_RAW.toString(),
+          rewardType: 'EARLY_USER',
+        },
+        reference: earlyUserResult.reference,
       });
     }
 
@@ -603,8 +641,9 @@ router.get('/me', jwtAuthMiddleware, async (req: Request, res: Response): Promis
         solanaAddress: user.solanaAddress,
         movementAddress: user.movementAddress,
         voteBalance: user.voteBalance,
-        rolBalanceRaw: effectiveRolBalanceRaw.toString(),
-        lastDailyRolAt: effectiveLastDailyRolAt,
+        rolBalanceRaw: user.rolBalanceRaw.toString(),
+        banterPointsRaw: effectiveBanterPointsRaw.toString(),
+        lastDailyPointsAt: effectiveLastDailyPointsAt,
         avatarUrl: user.avatarUrl,
         bannerUrl: user.bannerUrl,
         bio: user.bio,

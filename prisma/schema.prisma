@@ -30,6 +30,8 @@ model User {
   voteBalance     Int      @default(0)
   rolBalanceRaw   BigInt   @default(0) // Off-chain ROL rewards, raw units (8 decimals)
   lastDailyRolAt  DateTime?
+  banterPointsRaw BigInt   @default(0)
+  lastDailyPointsAt DateTime?
   
   // Relations
   wallets         Wallet[]
@@ -39,6 +41,7 @@ model User {
   reactions       Reaction[]
   payments        Payment[]
   notifications   Notification[]
+  pointLedger     PointLedger[]
   pcaVotes        PcaVote[]
   followers       Follow[] @relation("UserFollowers")
   following       Follow[] @relation("UserFollowing")
@@ -361,7 +364,18 @@ enum NotificationType {
   WALLET_TRANSFER
   COMMENT_REPLY
   DAILY_ROL
+  DAILY_POINTS
   XP
+}
+
+enum PointLedgerType {
+  LOGIN
+  EARLY_USER
+  FIRST_ROLLEY_STAKE
+  POST
+  PCA
+  REFERRAL
+  ADMIN_ADJUSTMENT
 }
 
 model Notification {
@@ -375,6 +389,20 @@ model Notification {
   reference   String?          @unique
   readAt      DateTime?
   createdAt   DateTime         @default(now())
+
+  @@index([userId, createdAt])
+  @@index([type])
+}
+
+model PointLedger {
+  id         String          @id @default(cuid())
+  userId     String
+  user       User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type       PointLedgerType
+  pointsRaw  BigInt
+  reference  String          @unique
+  metadata   Json?
+  createdAt  DateTime        @default(now())
 
   @@index([userId, createdAt])
   @@index([type])

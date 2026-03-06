@@ -26,6 +26,7 @@ import opsRoutes from './ops/routes';
 import notificationRoutes from './notification/routes';
 import adminRoutes from './admin/routes';
 import pcaRoutes from './pca/routes';
+import pointsRoutes from './points/routes';
 
 dotenv.config();
 
@@ -115,6 +116,7 @@ app.use('/api/leagues', leagueRoutes); // Public endpoint
 app.use('/api/users', jwtAuthMiddleware, userRoutes);
 app.use('/api/notifications', jwtAuthMiddleware, notificationRoutes);
 app.use('/api/pca', jwtAuthMiddleware, pcaRoutes);
+app.use('/api/rewards', jwtAuthMiddleware, pointsRoutes);
 app.use('/api/admin', adminRoutes);
 
 // Error handling
