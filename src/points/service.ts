@@ -24,6 +24,7 @@ export const FIRST_ROLLEY_STAKE_POINTS_RAW = parseBigIntEnv(
   process.env.BANTER_POINTS_FIRST_ROLLEY_STAKE_RAW,
   BigInt(75)
 );
+export const PCA_VOTE_POINTS_RAW = parseBigIntEnv(process.env.BANTER_POINTS_PCA_VOTE_RAW, BigInt(5));
 
 export const getLocalDayStart = (date: Date) =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate());
@@ -177,6 +178,34 @@ export const awardFirstRolleyStakePoints = async (
       stakeCreatedAt: input.stakeCreatedAt || null,
     },
   });
+
+export const awardPcaVotePoints = async (
+  tx: TxClient,
+  input: {
+    userId: string;
+    voteRecordId: string;
+    categoryId: string;
+    nomineeId: string;
+    votes: number;
+    now: Date;
+  }
+): Promise<AwardResult> => {
+  const dayKey = getLocalDayKey(input.now);
+  return awardPointsOnce(tx, {
+    userId: input.userId,
+    type: 'PCA',
+    pointsRaw: PCA_VOTE_POINTS_RAW,
+    reference: `pca_vote:${input.userId}:${dayKey}`,
+    metadata: {
+      rewardType: 'PCA_VOTE',
+      voteRecordId: input.voteRecordId,
+      categoryId: input.categoryId,
+      nomineeId: input.nomineeId,
+      votes: input.votes,
+      dayKey,
+    },
+  });
+};
 
 export const getRolleyServiceBaseUrl = () =>
   (process.env.ROLLEY_SERVICE_URL || 'https://sportbanter.online/rolley').replace(/\/+$/, '');

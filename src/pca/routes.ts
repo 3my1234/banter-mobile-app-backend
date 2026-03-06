@@ -4,6 +4,7 @@ import { prisma } from '../index';
 import { AppError } from '../utils/errorHandler';
 import { logger } from '../utils/logger';
 import { createNotification } from '../notification/service';
+import { PCA_VOTE_POINTS_RAW, awardPcaVotePoints } from '../points/service';
 import { getIO } from '../websocket/socket';
 
 const router = Router();
@@ -171,6 +172,17 @@ router.post('/vote', async (req: Request, res: Response): Promise<void> => {
       };
     });
 
+    const pcaPointsResult = await prisma.$transaction((tx) =>
+      awardPcaVotePoints(tx, {
+        userId,
+        voteRecordId: result.voteRecord.id,
+        categoryId,
+        nomineeId,
+        votes,
+        now: new Date(),
+      })
+    );
+
     await createNotification({
       userId,
       type: 'SYSTEM',
@@ -182,6 +194,24 @@ router.post('/vote', async (req: Request, res: Response): Promise<void> => {
         votes,
       },
     });
+
+    if (pcaPointsResult.awarded) {
+      await createNotification({
+        userId,
+        type: 'SYSTEM',
+        title: 'PCA Banter Points added',
+        body: 'You earned Banter Points for taking part in PCA voting today. Open Profile > Banter Points to see how your points count toward the future airdrop.',
+        data: {
+          pointsRaw: PCA_VOTE_POINTS_RAW.toString(),
+          rewardType: 'PCA_VOTE',
+          voteRecordId: result.voteRecord.id,
+          categoryId,
+          nomineeId,
+          votes,
+        },
+        reference: pcaPointsResult.reference,
+      });
+    }
 
     getIO().emit('pca.vote_update', {
       categoryId,
@@ -196,6 +226,8 @@ router.post('/vote', async (req: Request, res: Response): Promise<void> => {
       vote: result.voteRecord,
       remainingVoteBalance: result.remainingVotes,
       nominee: result.nominee,
+      pcaPointsAwarded: pcaPointsResult.awarded,
+      pcaPointsRaw: PCA_VOTE_POINTS_RAW.toString(),
     });
     return;
   } catch (error) {
