@@ -61,7 +61,7 @@ router.post('/rolley/first-stake', async (req: Request, res: Response): Promise<
         userId,
         type: 'SYSTEM',
         title: 'First Rolley stake bonus received',
-        body: 'You received Banter Points for completing your first Rolley stake.',
+        body: 'You received Banter Points for completing your first Rolley stake. See Profile > Banter Points for how points count toward the future airdrop.',
         data: {
           pointsRaw: FIRST_ROLLEY_STAKE_POINTS_RAW.toString(),
           rewardType: 'FIRST_ROLLEY_STAKE',
