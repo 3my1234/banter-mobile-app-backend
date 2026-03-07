@@ -79,6 +79,17 @@ const parseJsonBody = (value: any) => {
   throw new AppError('Invalid JSON payload', 400);
 };
 
+const serializeBigInts = (value: any): any => {
+  if (typeof value === 'bigint') return value.toString();
+  if (Array.isArray(value)) return value.map((item) => serializeBigInts(item));
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, serializeBigInts(item)])
+    );
+  }
+  return value;
+};
+
 const getPagination = (req: Request) => {
   const page = Math.max(1, Number(req.query.page || 1));
   const limit = Math.min(100, Math.max(1, Number(req.query.limit || 25)));
@@ -354,10 +365,7 @@ router.get('/users/:id', async (req: Request, res: Response): Promise<void> => {
       throw new AppError('User not found', 404);
     }
 
-    const safeUser = {
-      ...user,
-      rolBalanceRaw: user.rolBalanceRaw.toString(),
-    };
+    const safeUser = serializeBigInts(user);
 
     res.json({
       success: true,
