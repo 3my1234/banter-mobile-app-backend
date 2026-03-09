@@ -10,6 +10,7 @@ import {
   findFlutterwaveTransactionByRef,
 } from './flutterwave';
 import { createNotification } from '../notification/service';
+import { awardFirstRolleyStakePoints, getRolleyServiceBaseUrl } from '../points/service';
 
 const router = Router();
 
@@ -236,12 +237,63 @@ const findFlutterwavePaymentByRef = async (txRef: string) => {
   const recent = await prisma.payment.findMany({
     where: {
       chain: 'FLUTTERWAVE',
-      paymentType: 'VOTE_PURCHASE',
     },
     orderBy: { createdAt: 'desc' },
     take: 500,
   });
   return recent.find((payment) => (payment.metadata as any)?.txRef === txRef) || null;
+};
+
+const notifyRolleyStakeFunded = async (payment: {
+  id: string;
+  userId: string;
+  amount: number;
+  currency: string;
+  metadata: any;
+}) => {
+  const sport = String(payment?.metadata?.sport || '').toUpperCase();
+  const lockDays = Number(payment?.metadata?.lockDays || 0);
+  await createNotification({
+    userId: payment.userId,
+    type: 'SYSTEM',
+    title: 'Rolley rollover funded',
+    body: `Your ${payment.amount} ${payment.currency} ${sport ? `${sport} ` : ''}rollover for ${lockDays} day${lockDays === 1 ? '' : 's'} is active.`,
+    data: {
+      paymentId: payment.id,
+      amount: payment.amount,
+      currency: payment.currency,
+      sport,
+      lockDays,
+      stakeId: payment?.metadata?.rolleyStakeId || null,
+    },
+    reference: `rolley_payment:${payment.id}`,
+  });
+};
+
+const createRolleyStakePosition = async (input: {
+  userId: string;
+  paymentId: string;
+  sport: 'SOCCER' | 'BASKETBALL';
+  amount: number;
+  lockDays: number;
+  stakeAsset: 'USD' | 'USDC' | 'ROL';
+}) => {
+  const response = await axios.post(
+    `${getRolleyServiceBaseUrl()}/api/v1/stakes/create`,
+    {
+      user_id: input.userId,
+      external_reference: `payment:${input.paymentId}`,
+      sport: input.sport,
+      stake_asset: input.stakeAsset,
+      amount: input.amount,
+      lock_days: input.lockDays,
+    },
+    {
+      timeout: 15000,
+      headers: { 'Content-Type': 'application/json' },
+    }
+  );
+  return response.data?.stake || response.data;
 };
 
 const notifyVotePurchaseCompleted = async (payment: {
@@ -344,6 +396,97 @@ const finalizeFlutterwaveVotePayment = async (opts: {
   return { payment: updated, transactionId: String(resolvedTransactionId) };
 };
 
+const finalizeFlutterwaveRolleyPayment = async (opts: {
+  payment: any;
+  transactionId?: string;
+  txRef?: string;
+}) => {
+  const { payment, transactionId, txRef } = opts;
+
+  const metadata = (payment.metadata as any) || {};
+  const existingStakeId = metadata?.rolleyStakeId;
+  if (payment.status === 'COMPLETED' && existingStakeId) {
+    return { payment, transactionId: payment.txHash || '' };
+  }
+
+  let resolvedTransactionId = transactionId;
+  if (!resolvedTransactionId && txRef) {
+    const byRef = await findFlutterwaveTransactionByRef(txRef);
+    resolvedTransactionId = byRef || undefined;
+  }
+  if (!resolvedTransactionId) {
+    throw new AppError('transactionId or txRef is required', 400);
+  }
+
+  const verification = await verifyFlutterwavePayment(resolvedTransactionId);
+  if (verification.data.status !== 'successful') {
+    throw new AppError('Payment verification failed', 400);
+  }
+
+  if (txRef && verification.data.tx_ref !== txRef) {
+    throw new AppError('Reference mismatch', 400);
+  }
+
+  if (verification.data.amount < payment.amount) {
+    throw new AppError('Payment amount mismatch', 400);
+  }
+
+  const sport = String(metadata?.sport || '').toUpperCase();
+  const lockDays = Number(metadata?.lockDays || 0);
+  if ((sport !== 'SOCCER' && sport !== 'BASKETBALL') || !lockDays) {
+    throw new AppError('Rolley payment metadata is invalid', 400);
+  }
+
+  const stake = await createRolleyStakePosition({
+    userId: payment.userId,
+    paymentId: payment.id,
+    sport: sport as 'SOCCER' | 'BASKETBALL',
+    amount: payment.amount,
+    lockDays,
+    stakeAsset: 'USD',
+  });
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const latest = await tx.payment.findUnique({ where: { id: payment.id } });
+    if (!latest) {
+      throw new AppError('Payment not found', 404);
+    }
+
+    const nextMetadata = {
+      ...(latest.metadata as any),
+      flutterwave: verification.data,
+      rolleyStakeId: stake?.id || null,
+      rolleyStake: stake || null,
+    };
+
+    const updatedPayment = await tx.payment.update({
+      where: { id: payment.id },
+      data: {
+        status: 'COMPLETED',
+        txHash: String(resolvedTransactionId),
+        completedAt: new Date(),
+        metadata: nextMetadata,
+      },
+    });
+
+    try {
+      await awardFirstRolleyStakePoints(tx, {
+        userId: payment.userId,
+        stakeId: String(stake?.id || payment.id),
+        stakeCreatedAt: stake?.created_at || null,
+      });
+    } catch (error) {
+      logger.warn('Failed to award first Rolley stake points', { error, userId: payment.userId });
+    }
+
+    return updatedPayment;
+  });
+
+  await notifyRolleyStakeFunded(updated as any);
+
+  return { payment: updated, transactionId: String(resolvedTransactionId) };
+};
+
 router.get('/flutterwave/debug', async (_req: Request, res: Response): Promise<Response> => {
   try {
     const secret = process.env.FLUTTERWAVE_SECRET_KEY;
@@ -427,11 +570,18 @@ router.get('/flutterwave/callback', async (req: Request, res: Response): Promise
       return;
     }
 
-    const finalized = await finalizeFlutterwaveVotePayment({
-      payment,
-      transactionId: transactionId || undefined,
-      txRef,
-    });
+    const finalized =
+      payment.paymentType === 'ROLLEY_STAKE'
+        ? await finalizeFlutterwaveRolleyPayment({
+            payment,
+            transactionId: transactionId || undefined,
+            txRef,
+          })
+        : await finalizeFlutterwaveVotePayment({
+            payment,
+            transactionId: transactionId || undefined,
+            txRef,
+          });
 
     res.redirect(
       302,
@@ -494,16 +644,213 @@ router.post('/flutterwave/webhook', async (req: Request, res: Response): Promise
       return res.status(200).json({ success: true, message: 'Marked as failed' });
     }
 
-    await finalizeFlutterwaveVotePayment({
-      payment,
-      transactionId,
-      txRef,
-    });
+    if (payment.paymentType === 'ROLLEY_STAKE') {
+      await finalizeFlutterwaveRolleyPayment({
+        payment,
+        transactionId,
+        txRef,
+      });
+    } else {
+      await finalizeFlutterwaveVotePayment({
+        payment,
+        transactionId,
+        txRef,
+      });
+    }
 
     return res.status(200).json({ success: true });
   } catch (error) {
     logger.error('Flutterwave webhook processing error', { error, txRef, transactionId });
     return res.status(500).json({ success: false, message: 'Webhook processing failed' });
+  }
+});
+
+router.post('/flutterwave/rolley/create', async (req: Request, res: Response): Promise<Response | void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('User not authenticated', 401);
+    }
+
+    const { sport, amount, lockDays, redirectUrl } = req.body || {};
+    if (sport !== 'SOCCER' && sport !== 'BASKETBALL') {
+      throw new AppError('Sport must be SOCCER or BASKETBALL', 400);
+    }
+    const parsedAmount = Number(amount);
+    const parsedLockDays = Number(lockDays);
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      throw new AppError('Amount must be greater than zero', 400);
+    }
+    if (!Number.isInteger(parsedLockDays) || parsedLockDays < 5 || parsedLockDays > 30) {
+      throw new AppError('Lock days must be between 5 and 30', 400);
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) {
+      throw new AppError('User not found', 404);
+    }
+
+    const txRef = `ROLLEY_${userId}_${Date.now()}`;
+    const currency = 'USD';
+    const customerEmail = normalizeEmail(user.email, userId);
+    const appRedirectUrl = resolveAppRedirectUrl(redirectUrl);
+    const flutterwaveRedirectUrl = resolveFlutterwaveProviderRedirect(req);
+
+    const payment = await prisma.payment.create({
+      data: {
+        userId,
+        paymentType: 'ROLLEY_STAKE',
+        chain: 'FLUTTERWAVE',
+        amount: parsedAmount,
+        amountRaw: parsedAmount.toFixed(2),
+        currency,
+        tokenAddress: 'FLUTTERWAVE',
+        fromAddress: customerEmail,
+        toAddress: 'FLUTTERWAVE',
+        status: 'PENDING',
+        metadata: {
+          txRef,
+          appRedirectUrl,
+          sport,
+          lockDays: parsedLockDays,
+          stakeAsset: 'USD',
+        },
+      },
+    });
+
+    const phone = normalizePhone(user.phone || '');
+    const logo = process.env.FLUTTERWAVE_LOGO_URL || process.env.MEDIA_CDN_BASE || '';
+    const initPayload = {
+      email: customerEmail,
+      amount: parsedAmount,
+      currency,
+      tx_ref: txRef,
+      customer: {
+        email: customerEmail,
+        name: user.displayName || user.username || 'Banter User',
+        phonenumber: phone,
+        phone_number: phone,
+      },
+      meta: {
+        paymentId: payment.id,
+        userId,
+        sport,
+        lockDays: parsedLockDays,
+        purpose: 'ROLLEY_STAKE',
+      },
+      customizations: {
+        title: 'Rolley Managed Rollover',
+        description: `${sport} rollover for ${parsedLockDays} days`,
+        ...(logo ? { logo } : {}),
+      },
+      redirect_url: flutterwaveRedirectUrl,
+      payment_options: 'card',
+    };
+
+    const initResult = await initializeFlutterwavePayment(initPayload);
+
+    return res.json({
+      success: true,
+      paymentId: payment.id,
+      reference: txRef,
+      paymentUrl: initResult.data.link,
+      amount: parsedAmount,
+      currency,
+      sport,
+      lockDays: parsedLockDays,
+    });
+  } catch (error) {
+    const fwError = (error as any)?.response?.data || (error as any)?.message || error;
+    logger.error('Create Flutterwave Rolley payment error', { error: fwError });
+    if (error instanceof AppError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    const message =
+      (error as any)?.response?.data?.message ||
+      (typeof fwError === 'string' ? fwError : 'Failed to create payment');
+    return res.status(500).json({ success: false, message });
+  }
+});
+
+router.post('/flutterwave/rolley/verify', async (req: Request, res: Response): Promise<Response | void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('User not authenticated', 401);
+    }
+
+    const { paymentId, transactionId, txRef } = req.body || {};
+    if (!paymentId) {
+      throw new AppError('paymentId is required', 400);
+    }
+
+    const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
+    if (!payment) {
+      throw new AppError('Payment not found', 404);
+    }
+    if (payment.userId !== userId) {
+      throw new AppError('Not authorized to verify this payment', 403);
+    }
+    if (payment.paymentType !== 'ROLLEY_STAKE') {
+      throw new AppError('Payment is not a Rolley stake payment', 400);
+    }
+
+    const finalized = await finalizeFlutterwaveRolleyPayment({
+      payment,
+      transactionId,
+      txRef,
+    });
+
+    return res.json({ success: true, payment: finalized.payment });
+  } catch (error) {
+    logger.error('Verify Flutterwave Rolley payment error', { error });
+    if (error instanceof AppError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    return res.status(500).json({ success: false, message: 'Failed to verify payment' });
+  }
+});
+
+router.get('/flutterwave/rolley/status/:paymentId', async (req: Request, res: Response): Promise<Response | void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('User not authenticated', 401);
+    }
+
+    const paymentId = req.params.paymentId;
+    if (!paymentId) {
+      throw new AppError('paymentId is required', 400);
+    }
+
+    const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
+    if (!payment) {
+      throw new AppError('Payment not found', 404);
+    }
+    if (payment.userId !== userId) {
+      throw new AppError('Not authorized to access this payment', 403);
+    }
+    if (payment.paymentType !== 'ROLLEY_STAKE') {
+      throw new AppError('Payment is not a Rolley stake payment', 400);
+    }
+
+    return res.json({
+      success: true,
+      payment: {
+        id: payment.id,
+        status: payment.status,
+        txHash: payment.txHash,
+        chain: payment.chain,
+        completedAt: payment.completedAt,
+        metadata: payment.metadata,
+      },
+    });
+  } catch (error) {
+    logger.error('Get Flutterwave Rolley payment status error', { error });
+    if (error instanceof AppError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    return res.status(500).json({ success: false, message: 'Failed to get payment status' });
   }
 });
 
