@@ -288,6 +288,7 @@ router.get('/balances', async (req: Request, res: Response) => {
       ROL: { balance: user.rolBalanceRaw.toString(), balanceUsd: null, decimals: 8 },
       SOL: { balance: '0', balanceUsd: null, decimals: 9 },
       USDC: { balance: '0', balanceUsd: null, decimals: 6 },
+      'USDC.E': { balance: '0', balanceUsd: null, decimals: 6 },
     };
 
     // Aggregate balances from all wallets
@@ -295,7 +296,7 @@ router.get('/balances', async (req: Request, res: Response) => {
       for (const balance of wallet.walletBalances) {
         const symbol = balance.tokenSymbol.toUpperCase();
         if (symbol === 'ROL' || symbol === 'SOL' || symbol === 'USDC' || symbol === 'USDC.E') {
-          const key = symbol === 'USDC.E' ? 'USDC' : symbol;
+          const key = symbol;
           const existingBalanceData = balances[key] as {
             balance: string;
             balanceUsd: number | null;
@@ -313,13 +314,13 @@ router.get('/balances', async (req: Request, res: Response) => {
     }
 
     // Indexer fallback for Movement USDC if balance still zero
-    const usdcBalanceData = balances.USDC as { balance: string; balanceUsd: number | null; decimals: number };
+    const usdcBalanceData = balances['USDC.E'] as { balance: string; balanceUsd: number | null; decimals: number };
     if (usdcBalanceData && (!usdcBalanceData.balance || usdcBalanceData.balance === '0')) {
       const movementWallets = user.wallets.filter((w) => w.blockchain === 'MOVEMENT');
       if (movementWallets.length) {
         const indexerBalance = await fetchMovementUSDCBalance(movementWallets[0].address);
         if (indexerBalance && indexerBalance.balance !== '0') {
-          balances.USDC = {
+          balances['USDC.E'] = {
             balance: indexerBalance.balance,
             balanceUsd: null,
             decimals: indexerBalance.decimals,
