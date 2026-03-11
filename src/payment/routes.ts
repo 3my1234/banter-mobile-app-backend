@@ -153,11 +153,6 @@ const getSolanaBalanceDelta = (parsed: any, receiver: string, mint: string) => {
   return postAmount - preAmount;
 };
 
-const getSolanaSigners = (parsed: any) =>
-  (parsed.transaction?.message?.accountKeys || [])
-    .filter((key: any) => key?.signer)
-    .map((key: any) => key.pubkey.toBase58());
-
 const fetchMovementTransaction = async (txHash: string) => {
   const rpcUrls = getMovementRpcUrls();
   let lastError: unknown = null;
