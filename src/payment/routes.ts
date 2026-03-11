@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { Connection } from '@solana/web3.js';
+import bs58 from 'bs58';
 import axios from 'axios';
 import { prisma } from '../index';
 import { logger } from '../utils/logger';
@@ -19,6 +20,7 @@ const SOLANA_USDC_MINT =
   process.env.SOLANA_USDC_MINT || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const SOLANA_USDC_RECEIVER =
   process.env.SOLANA_USDC_RECEIVER || process.env.SOLANA_ADMIN_WALLET || '';
+const SOLANA_MEMO_PROGRAM_ID = 'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr';
 const MOVEMENT_RPC_URL =
   process.env.MOVEMENT_TESTNET_RPC || 'https://testnet.movementnetwork.xyz/v1';
 const MOVEMENT_RPC_FALLBACK =
@@ -71,6 +73,90 @@ const getMovementRpcUrls = () => {
 };
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const normalizeMemo = (value: string) => value.trim();
+
+const readMemoFromLogs = (logs: string[] | null | undefined) => {
+  if (!logs) return '';
+  for (const line of logs) {
+    if (!line) continue;
+    const trimmed = line.trim();
+    const match = trimmed.match(/Memo(?:\s*\(.*?\))?:\s*(.+)$/i);
+    if (match?.[1]) {
+      return normalizeMemo(match[1]);
+    }
+  }
+  return '';
+};
+
+const readMemoFromInstructions = (instructions: any[] | null | undefined) => {
+  if (!instructions) return '';
+  for (const ix of instructions) {
+    const programId = ix?.programId?.toString?.() || ix?.programId || '';
+    const program = ix?.program || '';
+    if (program !== 'spl-memo' && programId !== SOLANA_MEMO_PROGRAM_ID) {
+      continue;
+    }
+    const parsed = ix?.parsed;
+    if (typeof parsed === 'string') {
+      return normalizeMemo(parsed);
+    }
+    if (parsed?.type === 'memo' && typeof parsed?.info?.memo === 'string') {
+      return normalizeMemo(parsed.info.memo);
+    }
+    if (typeof ix?.data === 'string' && ix.data.length > 0) {
+      try {
+        const decoded = Buffer.from(bs58.decode(ix.data)).toString('utf8');
+        if (decoded) return normalizeMemo(decoded);
+      } catch {
+        // ignore decode errors
+      }
+    }
+  }
+  return '';
+};
+
+const extractSolanaMemo = (parsed: any) => {
+  const fromLogs = readMemoFromLogs(parsed?.meta?.logMessages);
+  if (fromLogs) return fromLogs;
+
+  const fromTop = readMemoFromInstructions(parsed?.transaction?.message?.instructions);
+  if (fromTop) return fromTop;
+
+  const inner = parsed?.meta?.innerInstructions || [];
+  for (const group of inner) {
+    const memo = readMemoFromInstructions(group?.instructions);
+    if (memo) return memo;
+  }
+  return '';
+};
+
+const getSolanaBalanceDelta = (parsed: any, receiver: string, mint: string) => {
+  const preBalances = parsed.meta?.preTokenBalances || [];
+  const postBalances = parsed.meta?.postTokenBalances || [];
+  const accountKeys = (parsed.transaction?.message?.accountKeys || []).map((key: any) =>
+    key?.pubkey?.toBase58 ? key.pubkey.toBase58() : key?.pubkey?.toString?.() || ''
+  );
+
+  const matchBalance = (balances: typeof preBalances) =>
+    balances.find((b) => {
+      if (b.mint !== mint) return false;
+      const accountKey = accountKeys[b.accountIndex] || '';
+      return b.owner === receiver || accountKey === receiver;
+    });
+
+  const pre = matchBalance(preBalances);
+  const post = matchBalance(postBalances);
+
+  const preAmount = BigInt(pre?.uiTokenAmount?.amount || '0');
+  const postAmount = BigInt(post?.uiTokenAmount?.amount || '0');
+  return postAmount - preAmount;
+};
+
+const getSolanaSigners = (parsed: any) =>
+  (parsed.transaction?.message?.accountKeys || [])
+    .filter((key: any) => key?.signer)
+    .map((key: any) => key.pubkey.toBase58());
 
 const fetchMovementTransaction = async (txHash: string) => {
   const rpcUrls = getMovementRpcUrls();
@@ -1374,31 +1460,14 @@ router.post('/solana/votes/verify', async (req: Request, res: Response): Promise
     const receiver = payment.toAddress;
     const mint = payment.tokenAddress;
 
-    const preBalances = parsed.meta?.preTokenBalances || [];
-    const postBalances = parsed.meta?.postTokenBalances || [];
-
-    const findBalance = (balances: typeof preBalances) =>
-      balances.find(
-        (b) =>
-          b.owner === receiver &&
-          b.mint === mint
-      );
-
-    const pre = findBalance(preBalances);
-    const post = findBalance(postBalances);
-
-    const preAmount = BigInt(pre?.uiTokenAmount?.amount || '0');
-    const postAmount = BigInt(post?.uiTokenAmount?.amount || '0');
-    const delta = postAmount - preAmount;
+    const delta = getSolanaBalanceDelta(parsed, receiver, mint);
 
     const required = BigInt(payment.amountRaw);
     if (delta < required) {
       throw new AppError('Payment amount mismatch', 400);
     }
 
-    const signers = parsed.transaction.message.accountKeys
-      .filter((key) => key.signer)
-      .map((key) => key.pubkey.toBase58());
+    const signers = getSolanaSigners(parsed);
 
     if (!signers.includes(payment.fromAddress)) {
       throw new AppError('Transaction signer mismatch', 400);
@@ -1463,6 +1532,193 @@ router.post('/solana/votes/verify', async (req: Request, res: Response): Promise
     return res.json({ success: true, payment: updated });
   } catch (error) {
     logger.error('Verify Solana vote payment error', { error });
+    if (error instanceof AppError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    return res.status(500).json({ success: false, message: 'Failed to verify payment' });
+  }
+});
+
+router.post('/solana/rolley/create', async (req: Request, res: Response): Promise<Response | void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('User not authenticated', 401);
+    }
+
+    const { sport, amount, lockDays } = req.body || {};
+    const parsedAmount = Number(amount);
+    const parsedLockDays = Number(lockDays);
+    const normalizedSport = String(sport || '').toUpperCase();
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      throw new AppError('Amount must be greater than zero', 400);
+    }
+    if (!Number.isFinite(parsedLockDays) || parsedLockDays <= 0) {
+      throw new AppError('Lock days must be greater than zero', 400);
+    }
+    if (normalizedSport !== 'SOCCER' && normalizedSport !== 'BASKETBALL') {
+      throw new AppError('Invalid sport selection', 400);
+    }
+    if (!SOLANA_USDC_RECEIVER) {
+      throw new AppError('Payment receiver not configured', 500);
+    }
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user || !user.solanaAddress) {
+      throw new AppError('Solana wallet not found', 400);
+    }
+
+    const rawAmount = priceToRaw(parsedAmount);
+    const payment = await prisma.payment.create({
+      data: {
+        userId,
+        paymentType: 'ROLLEY_STAKE',
+        chain: 'SOLANA',
+        amount: parsedAmount,
+        amountRaw: rawAmount,
+        currency: 'USDC',
+        tokenAddress: SOLANA_USDC_MINT,
+        fromAddress: user.solanaAddress,
+        toAddress: SOLANA_USDC_RECEIVER,
+        status: 'PENDING',
+        metadata: {
+          sport: normalizedSport,
+          lockDays: parsedLockDays,
+        },
+      },
+    });
+    const memo = `BAN${payment.id.slice(-8).toUpperCase()}`;
+    const updated = await prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        metadata: {
+          ...(payment.metadata as any),
+          memo,
+        },
+      },
+    });
+
+    return res.json({
+      success: true,
+      paymentId: payment.id,
+      chain: 'SOLANA',
+      fromAddress: payment.fromAddress,
+      toAddress: payment.toAddress,
+      amount: payment.amount,
+      amountRaw: payment.amountRaw,
+      tokenMint: SOLANA_USDC_MINT,
+      decimals: USDC_DECIMALS,
+      memo,
+      message: 'Send USDC to the address below, then paste the transaction hash to verify.',
+    });
+  } catch (error) {
+    logger.error('Create Solana rolley payment error', { error });
+    if (error instanceof AppError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    return res.status(500).json({ success: false, message: 'Failed to create payment' });
+  }
+});
+
+router.post('/solana/rolley/verify', async (req: Request, res: Response): Promise<Response | void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('User not authenticated', 401);
+    }
+
+    const { paymentId, txHash } = req.body || {};
+    if (!paymentId || !txHash) {
+      throw new AppError('paymentId and txHash are required', 400);
+    }
+
+    const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
+    if (!payment) {
+      throw new AppError('Payment not found', 404);
+    }
+    if (payment.userId !== userId) {
+      throw new AppError('Not authorized to verify this payment', 403);
+    }
+    if (payment.status === 'COMPLETED') {
+      return res.json({ success: true, payment, message: 'Payment already verified' });
+    }
+
+    const connection = new Connection(SOLANA_RPC_URL, 'finalized');
+    const parsed = await connection.getParsedTransaction(txHash, {
+      maxSupportedTransactionVersion: 0,
+    });
+
+    if (!parsed || parsed.meta?.err) {
+      throw new AppError('Transaction not confirmed', 400);
+    }
+
+    const receiver = payment.toAddress;
+    const mint = payment.tokenAddress;
+    const delta = getSolanaBalanceDelta(parsed, receiver, mint);
+
+    const required = BigInt(payment.amountRaw);
+    if (delta < required) {
+      throw new AppError('Payment amount mismatch', 400);
+    }
+
+    const memo = extractSolanaMemo(parsed);
+    const expectedMemo = normalizeMemo((payment.metadata as any)?.memo || '');
+    if (!memo) {
+      throw new AppError('Payment memo is missing', 400);
+    }
+    if (!expectedMemo || memo !== expectedMemo) {
+      throw new AppError('Payment memo mismatch', 400);
+    }
+
+    const metadata = (payment.metadata as any) || {};
+    const sport = String(metadata?.sport || '').toUpperCase();
+    const lockDays = Number(metadata?.lockDays || 0);
+    if ((sport !== 'SOCCER' && sport !== 'BASKETBALL') || !lockDays) {
+      throw new AppError('Rolley payment metadata is invalid', 400);
+    }
+
+    const stake = await createRolleyStakePosition({
+      userId: payment.userId,
+      paymentId: payment.id,
+      sport: sport as 'SOCCER' | 'BASKETBALL',
+      amount: payment.amount,
+      lockDays,
+      stakeAsset: 'USDC',
+    });
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const updatedPayment = await tx.payment.update({
+        where: { id: payment.id },
+        data: {
+          status: 'COMPLETED',
+          txHash,
+          completedAt: new Date(),
+          metadata: {
+            ...(payment.metadata as any),
+            rolleyStakeId: stake?.id || null,
+            rolleyStake: stake || null,
+          },
+        },
+      });
+
+      try {
+        await awardFirstRolleyStakePoints(tx, {
+          userId: payment.userId,
+          stakeId: String(stake?.id || payment.id),
+          stakeCreatedAt: stake?.created_at || null,
+        });
+      } catch (error) {
+        logger.warn('Failed to award first Rolley stake points', { error, userId: payment.userId });
+      }
+
+      return updatedPayment;
+    });
+
+    await notifyRolleyStakeFunded(updated as any);
+
+    return res.json({ success: true, payment: updated });
+  } catch (error) {
+    logger.error('Verify Solana rolley payment error', { error });
     if (error instanceof AppError) {
       return res.status(error.statusCode).json({ success: false, message: error.message });
     }
