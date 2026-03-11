@@ -53,5 +53,5 @@ EXPOSE 3001
 HEALTHCHECK --interval=30s --timeout=3s --start-period=40s --retries=3 \
   CMD node -e "require('http').get('http://localhost:3001/health', (r) => {process.exit(r.statusCode === 200 ? 0 : 1)})"
 
-# Start application with database wait
-CMD ["/app/wait-for-db.sh", "db:5432", "--", "node", "dist/index.js"]
+# Start application with database wait (configurable via env)
+CMD ["sh", "-c", "/app/wait-for-db.sh ${DB_HOST:-db}:${DB_PORT:-5432} -- node dist/index.js"]
