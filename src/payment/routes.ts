@@ -1401,18 +1401,29 @@ router.post('/solana/votes/create', async (req: Request, res: Response): Promise
         },
       },
     });
+    const memo = `BANV${payment.id.slice(-8).toUpperCase()}`;
+    const paymentWithMemo = await prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        metadata: {
+          ...(payment.metadata as any),
+          memo,
+        },
+      },
+    });
 
     return res.json({
       success: true,
-      paymentId: payment.id,
+      paymentId: paymentWithMemo.id,
       chain: 'SOLANA',
-      fromAddress: payment.fromAddress,
-      toAddress: payment.toAddress,
-      amount: payment.amount,
-      amountRaw: payment.amountRaw,
+      fromAddress: paymentWithMemo.fromAddress,
+      toAddress: paymentWithMemo.toAddress,
+      amount: paymentWithMemo.amount,
+      amountRaw: paymentWithMemo.amountRaw,
       tokenMint: SOLANA_USDC_MINT,
       decimals: USDC_DECIMALS,
-      message: 'Transaction ready. Sign and submit with your Solana wallet.',
+      memo,
+      message: 'Send USDC to the address below, include the memo, then paste the transaction hash to verify.',
     });
   } catch (error) {
     logger.error('Create Solana vote payment error', { error });
@@ -1467,10 +1478,13 @@ router.post('/solana/votes/verify', async (req: Request, res: Response): Promise
       throw new AppError('Payment amount mismatch', 400);
     }
 
-    const signers = getSolanaSigners(parsed);
-
-    if (!signers.includes(payment.fromAddress)) {
-      throw new AppError('Transaction signer mismatch', 400);
+    const memo = extractSolanaMemo(parsed);
+    const expectedMemo = normalizeMemo((payment.metadata as any)?.memo || '');
+    if (!memo) {
+      throw new AppError('Payment memo is missing', 400);
+    }
+    if (!expectedMemo || memo !== expectedMemo) {
+      throw new AppError('Payment memo mismatch', 400);
     }
 
     const updated = await prisma.$transaction(async (tx) => {
