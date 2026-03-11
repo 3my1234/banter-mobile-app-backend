@@ -139,7 +139,7 @@ const getSolanaBalanceDelta = (parsed: any, receiver: string, mint: string) => {
   );
 
   const matchBalance = (balances: typeof preBalances) =>
-    balances.find((b) => {
+    balances.find((b: any) => {
       if (b.mint !== mint) return false;
       const accountKey = accountKeys[b.accountIndex] || '';
       return b.owner === receiver || accountKey === receiver;
@@ -1588,7 +1588,7 @@ router.post('/solana/rolley/create', async (req: Request, res: Response): Promis
       },
     });
     const memo = `BAN${payment.id.slice(-8).toUpperCase()}`;
-    const updated = await prisma.payment.update({
+    const paymentWithMemo = await prisma.payment.update({
       where: { id: payment.id },
       data: {
         metadata: {
@@ -1602,10 +1602,10 @@ router.post('/solana/rolley/create', async (req: Request, res: Response): Promis
       success: true,
       paymentId: payment.id,
       chain: 'SOLANA',
-      fromAddress: payment.fromAddress,
-      toAddress: payment.toAddress,
-      amount: payment.amount,
-      amountRaw: payment.amountRaw,
+      fromAddress: paymentWithMemo.fromAddress,
+      toAddress: paymentWithMemo.toAddress,
+      amount: paymentWithMemo.amount,
+      amountRaw: paymentWithMemo.amountRaw,
       tokenMint: SOLANA_USDC_MINT,
       decimals: USDC_DECIMALS,
       memo,
