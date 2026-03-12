@@ -1,8 +1,6 @@
 name: Deploy Backend
 
 on:
-  push:
-    branches: ["main"]
   workflow_dispatch:
 
 jobs:
@@ -34,7 +32,8 @@ jobs:
               $DC logs --tail=200 app || true
               exit 1
             fi
-            if ! curl -f http://localhost:3001/health; then
+            # Wait for app to be ready
+            if ! curl -f --retry 30 --retry-connrefused --retry-delay 2 http://localhost:3001/health; then
               $DC logs --tail=200 app || true
               exit 1
             fi
