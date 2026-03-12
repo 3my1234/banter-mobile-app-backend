@@ -15,6 +15,14 @@ import { awardFirstRolleyStakePoints, getRolleyServiceBaseUrl } from '../points/
 
 const router = Router();
 
+// Public health check for payments (mounted at /api/public/payments and /api/payments)
+router.get('/health', (_req: Request, res: Response): Response => {
+  return res.status(200).json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+  });
+});
+
 const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
 const SOLANA_USDC_MINT =
   process.env.SOLANA_USDC_MINT || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
