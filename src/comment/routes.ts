@@ -6,6 +6,7 @@ import { jwtAuthMiddleware } from '../auth/jwtMiddleware';
 import { createNotification } from '../notification/service';
 
 const router = Router();
+const VALID_COMMENT_EMOJIS = ['😂', '🔥', '❤️', '👏', '😮', '😢'];
 
 /**
  * GET /api/comments/:commentId/replies
@@ -13,6 +14,7 @@ const router = Router();
  */
 router.get('/replies/:commentId', async (req: Request, res: Response): Promise<Response | void> => {
   try {
+    const userId = req.user?.userId;
     const commentId = req.params.commentId;
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
@@ -45,6 +47,35 @@ router.get('/replies/:commentId', async (req: Request, res: Response): Promise<R
       take: limit,
     });
 
+    const replyIds = replies.map((reply) => reply.id);
+    const replyReactionGroups = replyIds.length
+      ? await prisma.commentReaction.groupBy({
+          by: ['commentId', 'emoji'],
+          where: { commentId: { in: replyIds } },
+          _count: { emoji: true },
+        })
+      : [];
+    const replyBreakdownMap = replyReactionGroups.reduce<
+      Record<string, Record<string, number>>
+    >((acc, row) => {
+      if (!acc[row.commentId]) acc[row.commentId] = {};
+      acc[row.commentId][row.emoji] = row._count.emoji;
+      return acc;
+    }, {});
+    const replyUserReactions = userId && replyIds.length
+      ? await prisma.commentReaction.findMany({
+          where: { commentId: { in: replyIds }, userId },
+          select: { commentId: true, emoji: true },
+        })
+      : [];
+    const replyUserReactionMap = replyUserReactions.reduce<Record<string, string>>(
+      (acc, row) => {
+        acc[row.commentId] = row.emoji;
+        return acc;
+      },
+      {}
+    );
+
     const total = await prisma.comment.count({
       where: { parentId: commentId },
     });
@@ -59,6 +90,8 @@ router.get('/replies/:commentId', async (req: Request, res: Response): Promise<R
         content: comment.content,
         createdAt: comment.createdAt,
         user: comment.user,
+        reactionBreakdown: replyBreakdownMap[comment.id] || {},
+        userReaction: replyUserReactionMap[comment.id] || null,
       })),
       pagination: {
         page,
@@ -241,6 +274,7 @@ router.post('/', async (req: Request, res: Response): Promise<Response | void> =
  */
 router.get('/:postId', async (req: Request, res: Response): Promise<Response | void> => {
   try {
+    const userId = req.user?.userId;
     const postId = req.params.postId;
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 50;
@@ -295,6 +329,33 @@ router.get('/:postId', async (req: Request, res: Response): Promise<Response | v
       take: limit,
     });
 
+    const commentIds = comments.map((comment) => comment.id);
+    const reactionGroups = commentIds.length
+      ? await prisma.commentReaction.groupBy({
+          by: ['commentId', 'emoji'],
+          where: { commentId: { in: commentIds } },
+          _count: { emoji: true },
+        })
+      : [];
+    const breakdownMap = reactionGroups.reduce<Record<string, Record<string, number>>>(
+      (acc, row) => {
+        if (!acc[row.commentId]) acc[row.commentId] = {};
+        acc[row.commentId][row.emoji] = row._count.emoji;
+        return acc;
+      },
+      {}
+    );
+    const userReactions = userId && commentIds.length
+      ? await prisma.commentReaction.findMany({
+          where: { commentId: { in: commentIds }, userId },
+          select: { commentId: true, emoji: true },
+        })
+      : [];
+    const userReactionMap = userReactions.reduce<Record<string, string>>((acc, row) => {
+      acc[row.commentId] = row.emoji;
+      return acc;
+    }, {});
+
     const total = await prisma.comment.count({
       where: { postId, parentId: parentId ?? null },
     });
@@ -314,6 +375,8 @@ router.get('/:postId', async (req: Request, res: Response): Promise<Response | v
         createdAt: comment.createdAt,
         user: comment.user,
         replyCount: comment._count?.replies || 0,
+        reactionBreakdown: breakdownMap[comment.id] || {},
+        userReaction: userReactionMap[comment.id] || null,
         replies: replyList
           ? replyList.map((reply) => ({
               id: reply.id,
@@ -420,6 +483,115 @@ router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response): Pro
   } catch (error) {
     logger.error('Edit comment error', { error });
     return res.status(500).json({ success: false, message: 'Failed to edit comment' });
+  }
+});
+
+/**
+ * POST /api/comments/:commentId/reactions
+ * Add or update a reaction on a comment
+ */
+router.post('/:commentId/reactions', jwtAuthMiddleware, async (req: Request, res: Response): Promise<Response | void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'User not authenticated' });
+    }
+
+    const commentId = req.params.commentId;
+    const emoji = typeof req.body?.emoji === 'string' ? req.body.emoji.trim() : '';
+
+    if (!emoji || !VALID_COMMENT_EMOJIS.includes(emoji)) {
+      return res.status(400).json({
+        success: false,
+        message: `Emoji must be one of: ${VALID_COMMENT_EMOJIS.join(', ')}`,
+      });
+    }
+
+    const comment = await prisma.comment.findUnique({
+      where: { id: commentId },
+      include: { post: true },
+    });
+
+    if (!comment) {
+      return res.status(404).json({ success: false, message: 'Comment not found' });
+    }
+
+    if (comment.post?.status !== 'ACTIVE') {
+      return res.status(400).json({ success: false, message: 'Cannot react to inactive post' });
+    }
+
+    const existing = await prisma.commentReaction.findUnique({
+      where: {
+        commentId_userId: {
+          commentId,
+          userId,
+        },
+      },
+    });
+
+    let reaction: { id: string; commentId: string; userId: string; emoji: string } | null = null;
+    let action: 'created' | 'updated' | 'removed' = 'created';
+
+    if (existing) {
+      if (existing.emoji === emoji) {
+        await prisma.commentReaction.delete({ where: { id: existing.id } });
+        action = 'removed';
+      } else {
+        const updated = await prisma.commentReaction.update({
+          where: { id: existing.id },
+          data: { emoji },
+        });
+        reaction = {
+          id: updated.id,
+          commentId: updated.commentId,
+          userId: updated.userId,
+          emoji: updated.emoji,
+        };
+        action = 'updated';
+      }
+    } else {
+      const created = await prisma.commentReaction.create({
+        data: { commentId, userId, emoji },
+      });
+      reaction = {
+        id: created.id,
+        commentId: created.commentId,
+        userId: created.userId,
+        emoji: created.emoji,
+      };
+      action = 'created';
+    }
+
+    const grouped = await prisma.commentReaction.groupBy({
+      by: ['emoji'],
+      where: { commentId },
+      _count: { emoji: true },
+    });
+    const reactionBreakdown = grouped.reduce<Record<string, number>>((acc, row) => {
+      acc[row.emoji] = row._count.emoji;
+      return acc;
+    }, {});
+
+    try {
+      getIO().emit('comment-reaction-update', {
+        commentId,
+        reactionBreakdown,
+        action,
+        emoji,
+        userId,
+      });
+    } catch (error) {
+      logger.warn('WebSocket not available for comment-reaction-update event', { error });
+    }
+
+    return res.json({
+      success: true,
+      reaction: action === 'removed' ? null : reaction,
+      reactionBreakdown,
+    });
+  } catch (error) {
+    logger.error('Comment reaction error', { error });
+    return res.status(500).json({ success: false, message: 'Failed to react to comment' });
   }
 });
 

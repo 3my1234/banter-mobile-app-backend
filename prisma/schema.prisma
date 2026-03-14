@@ -39,6 +39,7 @@ model User {
   votes           Vote[]
   comments        Comment[]
   reactions       Reaction[]
+  commentReactions CommentReaction[]
   payments        Payment[]
   notifications   Notification[]
   pointLedger     PointLedger[]
@@ -192,6 +193,8 @@ model Comment {
   replies         Comment[] @relation("CommentReplies")
 
   content         String
+
+  commentReactions CommentReaction[]
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -199,6 +202,23 @@ model Comment {
   @@index([postId])
   @@index([userId])
   @@index([parentId])
+}
+
+// CommentReaction model - Emoji reactions on comments
+model CommentReaction {
+  id        String   @id @default(cuid())
+  commentId String
+  comment   Comment  @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  emoji     String
+
+  createdAt DateTime @default(now())
+
+  @@unique([commentId, userId])
+  @@index([commentId])
+  @@index([userId])
 }
 
 // Reaction model - Reactions on posts (like, love, laugh, etc.)
