@@ -77,6 +77,11 @@ const parseFxRate = (value: string | undefined) => {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
 };
+const EXCHANGERATE_HOST_KEY = (
+  process.env.EXCHANGERATE_HOST_KEY ||
+  process.env.EXCHANGE_RATE_HOST_KEY ||
+  ''
+).trim();
 const FX_RATE_TTL_MS = Math.max(
   60_000,
   Number(process.env.FX_RATE_TTL_SECONDS || 900) * 1000
@@ -94,15 +99,38 @@ const getFlutterwaveFxRate = async () => {
     cachedFxRate = { rate: configured, expiresAt: now + FX_RATE_TTL_MS };
     return configured;
   }
-  const response = await axios.get(
-    'https://api.exchangerate.host/latest?base=USD&symbols=NGN'
-  );
-  const rate = Number(response?.data?.rates?.NGN || 0);
-  if (!Number.isFinite(rate) || rate <= 0) {
-    throw new AppError('Unable to fetch USD->NGN rate', 500);
+  const sources = [
+    async () => {
+      const base = 'https://api.exchangerate.host/latest?base=USD&symbols=NGN';
+      const url = EXCHANGERATE_HOST_KEY
+        ? `${base}&access_key=${encodeURIComponent(EXCHANGERATE_HOST_KEY)}`
+        : base;
+      const response = await axios.get(url, { timeout: 5000 });
+      if (response?.data?.success === false) {
+        return 0;
+      }
+      return Number(response?.data?.rates?.NGN || 0);
+    },
+    async () => {
+      const response = await axios.get(
+        'https://open.er-api.com/v6/latest/USD',
+        { timeout: 5000 }
+      );
+      return Number(response?.data?.rates?.NGN || 0);
+    },
+  ];
+  for (const fetchRate of sources) {
+    try {
+      const rate = await fetchRate();
+      if (Number.isFinite(rate) && rate > 0) {
+        cachedFxRate = { rate, expiresAt: now + FX_RATE_TTL_MS };
+        return rate;
+      }
+    } catch {
+      // try next provider
+    }
   }
-  cachedFxRate = { rate, expiresAt: now + FX_RATE_TTL_MS };
-  return rate;
+  throw new AppError('Unable to fetch USD->NGN rate', 500);
 };
 const isNigeriaUser = (user?: { country?: string | null; phone?: string | null }) => {
   const country = (user?.country || '').trim().toLowerCase();
@@ -120,7 +148,7 @@ const resolveFlutterwaveAmount = async (usdAmount: number, currency: string) => 
   if (currency === 'NGN') {
     const rate = await getFlutterwaveFxRate();
     if (!rate) {
-      throw new AppError('NGN payments require FLUTTERWAVE_NGN_RATE', 400);
+      throw new AppError('Unable to fetch USD->NGN rate', 500);
     }
     const converted = Math.round(usdAmount * rate * 100) / 100;
     return converted;
