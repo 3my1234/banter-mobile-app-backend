@@ -72,6 +72,61 @@ const normalizeEmail = (value: string | null | undefined, userId: string) => {
   }
   return `user-${userId}@banter.app`;
 };
+const parseFxRate = (value: string | undefined) => {
+  if (!value) return 0;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+};
+const FX_RATE_TTL_MS = Math.max(
+  60_000,
+  Number(process.env.FX_RATE_TTL_SECONDS || 900) * 1000
+);
+let cachedFxRate: { rate: number; expiresAt: number } | null = null;
+const getFlutterwaveFxRate = async () => {
+  const now = Date.now();
+  if (cachedFxRate && cachedFxRate.expiresAt > now) {
+    return cachedFxRate.rate;
+  }
+  const configured = parseFxRate(
+    process.env.FLUTTERWAVE_NGN_RATE || process.env.EXCHANGE_RATE_USD_NGN
+  );
+  if (configured) {
+    cachedFxRate = { rate: configured, expiresAt: now + FX_RATE_TTL_MS };
+    return configured;
+  }
+  const response = await axios.get(
+    'https://api.exchangerate.host/latest?base=USD&symbols=NGN'
+  );
+  const rate = Number(response?.data?.rates?.NGN || 0);
+  if (!Number.isFinite(rate) || rate <= 0) {
+    throw new AppError('Unable to fetch USD->NGN rate', 500);
+  }
+  cachedFxRate = { rate, expiresAt: now + FX_RATE_TTL_MS };
+  return rate;
+};
+const isNigeriaUser = (user?: { country?: string | null; phone?: string | null }) => {
+  const country = (user?.country || '').trim().toLowerCase();
+  if (country === 'nigeria' || country === 'ng') return true;
+  const phoneDigits = (user?.phone || '').replace(/\D+/g, '');
+  return phoneDigits.startsWith('234');
+};
+const resolveFlutterwaveCurrency = (requested: unknown, user?: { country?: string | null; phone?: string | null }) => {
+  const normalized = typeof requested === 'string' ? requested.trim().toUpperCase() : '';
+  if (normalized === 'USD' || normalized === 'NGN') return normalized;
+  if (isNigeriaUser(user)) return 'NGN';
+  return 'USD';
+};
+const resolveFlutterwaveAmount = async (usdAmount: number, currency: string) => {
+  if (currency === 'NGN') {
+    const rate = await getFlutterwaveFxRate();
+    if (!rate) {
+      throw new AppError('NGN payments require FLUTTERWAVE_NGN_RATE', 400);
+    }
+    const converted = Math.round(usdAmount * rate * 100) / 100;
+    return converted;
+  }
+  return usdAmount;
+};
 
 const getMovementRpcUrls = () => {
   const urls = [MOVEMENT_RPC_URL, MOVEMENT_RPC_FALLBACK]
@@ -439,6 +494,11 @@ const finalizeFlutterwaveVotePayment = async (opts: {
     throw new AppError('Reference mismatch', 400);
   }
 
+  if (verification.data.currency && payment.currency &&
+      verification.data.currency.toUpperCase() !== String(payment.currency).toUpperCase()) {
+    throw new AppError('Payment currency mismatch', 400);
+  }
+
   if (verification.data.amount < payment.amount) {
     throw new AppError('Payment amount mismatch', 400);
   }
@@ -516,6 +576,11 @@ const finalizeFlutterwaveRolleyPayment = async (opts: {
     throw new AppError('Reference mismatch', 400);
   }
 
+  if (verification.data.currency && payment.currency &&
+      verification.data.currency.toUpperCase() !== String(payment.currency).toUpperCase()) {
+    throw new AppError('Payment currency mismatch', 400);
+  }
+
   if (verification.data.amount < payment.amount) {
     throw new AppError('Payment amount mismatch', 400);
   }
@@ -526,11 +591,20 @@ const finalizeFlutterwaveRolleyPayment = async (opts: {
     throw new AppError('Rolley payment metadata is invalid', 400);
   }
 
+  const paymentCurrency = String(payment.currency || 'USD').toUpperCase();
+  const stakeAmount =
+    paymentCurrency === 'NGN'
+      ? Number(metadata?.usdAmount || 0)
+      : Number(payment.amount);
+  if (!Number.isFinite(stakeAmount) || stakeAmount <= 0) {
+    throw new AppError('Rolley payment amount is invalid', 400);
+  }
+
   const stake = await createRolleyStakePosition({
     userId: payment.userId,
     paymentId: payment.id,
     sport: sport as 'SOCCER' | 'BASKETBALL',
-    amount: payment.amount,
+    amount: stakeAmount,
     lockDays,
     stakeAsset: 'USD',
   });
@@ -624,6 +698,7 @@ router.get('/votes/bundles', (_req: Request, res: Response): Response => {
       price: bundle.price,
       currency: 'USD',
     })),
+    supportedCurrencies: ['USD', 'NGN'],
     decimals: USDC_DECIMALS,
     mint: SOLANA_USDC_MINT,
   });
@@ -780,7 +855,8 @@ router.post('/flutterwave/rolley/create', async (req: Request, res: Response): P
     }
 
     const txRef = `ROLLEY_${userId}_${Date.now()}`;
-    const currency = 'USD';
+    const currency = resolveFlutterwaveCurrency(req.body?.currency, user);
+    const chargeAmount = await resolveFlutterwaveAmount(parsedAmount, currency);
     const customerEmail = normalizeEmail(user.email, userId);
     const appRedirectUrl = resolveAppRedirectUrl(redirectUrl);
     const flutterwaveRedirectUrl = resolveFlutterwaveProviderRedirect(req);
@@ -790,8 +866,8 @@ router.post('/flutterwave/rolley/create', async (req: Request, res: Response): P
         userId,
         paymentType: 'ROLLEY_STAKE',
         chain: 'FLUTTERWAVE',
-        amount: parsedAmount,
-        amountRaw: parsedAmount.toFixed(2),
+        amount: chargeAmount,
+        amountRaw: chargeAmount.toFixed(2),
         currency,
         tokenAddress: 'FLUTTERWAVE',
         fromAddress: customerEmail,
@@ -803,6 +879,8 @@ router.post('/flutterwave/rolley/create', async (req: Request, res: Response): P
           sport,
           lockDays: parsedLockDays,
           stakeAsset: 'USD',
+          usdAmount: parsedAmount,
+          fxRate: currency === 'NGN' ? await getFlutterwaveFxRate() : null,
         },
       },
     });
@@ -811,7 +889,7 @@ router.post('/flutterwave/rolley/create', async (req: Request, res: Response): P
     const logo = process.env.FLUTTERWAVE_LOGO_URL || process.env.MEDIA_CDN_BASE || '';
     const initPayload = {
       email: customerEmail,
-      amount: parsedAmount,
+      amount: chargeAmount,
       currency,
       tx_ref: txRef,
       customer: {
@@ -843,7 +921,7 @@ router.post('/flutterwave/rolley/create', async (req: Request, res: Response): P
       paymentId: payment.id,
       reference: txRef,
       paymentUrl: initResult.data.link,
-      amount: parsedAmount,
+      amount: chargeAmount,
       currency,
       sport,
       lockDays: parsedLockDays,
@@ -967,7 +1045,8 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
     }
 
     const txRef = `BANTER_${userId}_${Date.now()}`;
-    const currency = 'USD';
+    const currency = resolveFlutterwaveCurrency(req.body?.currency, user);
+    const chargeAmount = await resolveFlutterwaveAmount(bundle.price, currency);
     const customerEmail = normalizeEmail(user.email, userId);
     const appRedirectUrl = resolveAppRedirectUrl(redirectUrl);
     const flutterwaveRedirectUrl = resolveFlutterwaveProviderRedirect(req);
@@ -977,8 +1056,8 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
         userId,
         paymentType: 'VOTE_PURCHASE',
         chain: 'FLUTTERWAVE',
-        amount: bundle.price,
-        amountRaw: bundle.price.toFixed(2),
+        amount: chargeAmount,
+        amountRaw: chargeAmount.toFixed(2),
         currency,
         tokenAddress: 'FLUTTERWAVE',
         fromAddress: customerEmail,
@@ -989,6 +1068,8 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
           votes: bundle.votes,
           txRef,
           appRedirectUrl,
+          usdAmount: bundle.price,
+          fxRate: currency === 'NGN' ? await getFlutterwaveFxRate() : null,
         },
       },
     });
@@ -998,7 +1079,7 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
 
     const initPayload = {
       email: customerEmail,
-      amount: bundle.price,
+      amount: chargeAmount,
       currency,
       tx_ref: txRef,
       customer: {
@@ -1029,7 +1110,7 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
       paymentId: payment.id,
       reference: txRef,
       paymentUrl: initResult.data.link,
-      amount: bundle.price,
+      amount: chargeAmount,
       currency,
     });
   } catch (error) {
