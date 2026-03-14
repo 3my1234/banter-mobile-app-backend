@@ -101,21 +101,19 @@ const getFlutterwaveFxRate = async () => {
   }
   const sources = [
     async () => {
+      const response = await axios.get('https://open.er-api.com/v6/latest/USD', {
+        timeout: 5000,
+      });
+      return Number(response?.data?.rates?.NGN || 0);
+    },
+    async () => {
+      if (!EXCHANGERATE_HOST_KEY) return 0;
       const base = 'https://api.exchangerate.host/latest?base=USD&symbols=NGN';
-      const url = EXCHANGERATE_HOST_KEY
-        ? `${base}&access_key=${encodeURIComponent(EXCHANGERATE_HOST_KEY)}`
-        : base;
+      const url = `${base}&access_key=${encodeURIComponent(EXCHANGERATE_HOST_KEY)}`;
       const response = await axios.get(url, { timeout: 5000 });
       if (response?.data?.success === false) {
         return 0;
       }
-      return Number(response?.data?.rates?.NGN || 0);
-    },
-    async () => {
-      const response = await axios.get(
-        'https://open.er-api.com/v6/latest/USD',
-        { timeout: 5000 }
-      );
       return Number(response?.data?.rates?.NGN || 0);
     },
   ];
