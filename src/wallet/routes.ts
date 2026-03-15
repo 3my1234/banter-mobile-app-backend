@@ -364,15 +364,18 @@ async function fetchSolanaUSDCHistory(walletAddress: string): Promise<SolanaInde
         preBalances[0]?.uiTokenAmount?.decimals ??
         6;
 
-      const sumAmounts = (balances: any[]) =>
-        balances.reduce((acc, entry) => acc + toRawBigInt(entry.uiTokenAmount?.amount), BigInt(0));
+      const sumAmounts = (balances: any[]): bigint =>
+        balances.reduce(
+          (acc, entry) => acc + toRawBigInt(entry.uiTokenAmount?.amount),
+          0n
+        );
       const preSum = sumAmounts(preBalances);
       const postSum = sumAmounts(postBalances);
       const net = postSum - preSum;
 
-      if (net === BigInt(0)) continue;
+      if (net === 0n) continue;
 
-      const isDeposit = net > BigInt(0);
+      const isDeposit = net > 0n;
       const amount = (isDeposit ? net : -net).toString();
 
       const transfers = readSolanaTransfers(parsedTx, tokenAccountSet);
