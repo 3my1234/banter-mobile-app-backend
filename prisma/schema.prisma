@@ -23,6 +23,7 @@ model User {
   avatarUrl       String?  // Profile picture URL
   bannerUrl       String?  // Profile banner URL
   bio             String?
+  profileLocked   Boolean  @default(false)
   phone           String?
   country         String?
   dateOfBirth     DateTime?

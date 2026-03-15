@@ -12,6 +12,7 @@ const router = Router();
 router.get('/:id/posts', async (req: Request, res: Response) => {
   try {
     const userId = req.params.id;
+    const viewerId = req.user?.userId;
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const skip = (page - 1) * limit;
@@ -22,6 +23,20 @@ router.get('/:id/posts', async (req: Request, res: Response) => {
 
     if (!user) {
       throw new AppError('User not found', 404);
+    }
+
+    if (user.profileLocked && viewerId !== userId) {
+      res.json({
+        success: true,
+        posts: [],
+        pagination: {
+          page,
+          limit,
+          total: 0,
+          totalPages: 0,
+        },
+      });
+      return;
     }
 
     const posts = await prisma.post.findMany({
@@ -138,6 +153,7 @@ router.get('/:id', async (req: Request, res: Response) => {
         avatarUrl: true,
         bannerUrl: true,
         bio: true,
+        profileLocked: true,
         createdAt: true,
       },
     });
@@ -165,6 +181,7 @@ router.get('/:id', async (req: Request, res: Response) => {
       success: true,
       user: {
         ...user,
+        profileLocked: user.profileLocked,
         followersCount,
         followingCount,
       },

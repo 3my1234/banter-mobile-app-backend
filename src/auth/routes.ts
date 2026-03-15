@@ -430,7 +430,7 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
 /**
  * POST /api/auth/register
  * Register a new user
- * Request: { email: string, displayName?: string, username?: string, solanaAddress: string, movementAddress: string }
+ * Request: { email: string, displayName?: string, username?: string, solanaAddress: string, movementAddress?: string }
  * Response: { token: string }
  */
 router.post('/register', async (req: Request, res: Response): Promise<void> => {
@@ -445,12 +445,11 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
       throw new AppError('Solana address is required', 400);
     }
 
-    if (!movementAddress || typeof movementAddress !== 'string') {
-      throw new AppError('Movement address is required', 400);
-    }
-
     const normalizedSolanaAddress = solanaAddress.trim();
-    const normalizedMovementAddress = movementAddress.trim().toLowerCase();
+    const normalizedMovementAddress =
+      typeof movementAddress === 'string' && movementAddress.trim().length > 0
+        ? movementAddress.trim().toLowerCase()
+        : null;
 
     // Check if user already exists
     const existingUser = await prisma.user.findUnique({
@@ -481,12 +480,14 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
       throw new AppError('Solana address already registered', 409);
     }
 
-    const existingMovement = await prisma.user.findUnique({
-      where: { movementAddress: normalizedMovementAddress },
-    });
+    if (normalizedMovementAddress) {
+      const existingMovement = await prisma.user.findUnique({
+        where: { movementAddress: normalizedMovementAddress },
+      });
 
-    if (existingMovement) {
-      throw new AppError('Movement address already registered', 409);
+      if (existingMovement) {
+        throw new AppError('Movement address already registered', 409);
+      }
     }
 
     // Create new user
@@ -503,26 +504,27 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
         },
       });
 
-      await tx.wallet.createMany({
-        data: [
-          {
-            userId: createdUser.id,
-            address: normalizedMovementAddress,
-            blockchain: 'MOVEMENT',
-            type: 'WEB3AUTH',
-            walletClient: 'MOVEMENT_WEB3AUTH',
-            isPrimary: true,
-          },
-          {
-            userId: createdUser.id,
-            address: normalizedSolanaAddress,
-            blockchain: 'SOLANA',
-            type: 'WEB3AUTH',
-            walletClient: 'SOLANA_WEB3AUTH',
-            isPrimary: false,
-          },
-        ],
+      const walletData: any[] = [];
+      if (normalizedMovementAddress) {
+        walletData.push({
+          userId: createdUser.id,
+          address: normalizedMovementAddress,
+          blockchain: 'MOVEMENT',
+          type: 'WEB3AUTH',
+          walletClient: 'MOVEMENT_WEB3AUTH',
+          isPrimary: true,
+        });
+      }
+      walletData.push({
+        userId: createdUser.id,
+        address: normalizedSolanaAddress,
+        blockchain: 'SOLANA',
+        type: 'WEB3AUTH',
+        walletClient: 'SOLANA_WEB3AUTH',
+        isPrimary: !normalizedMovementAddress,
       });
+
+      await tx.wallet.createMany({ data: walletData });
 
       const earlyUserResult = await awardEarlyUserPoints(tx, createdUser);
       earlyUserAwarded = earlyUserResult.awarded;
@@ -647,6 +649,7 @@ router.get('/me', jwtAuthMiddleware, async (req: Request, res: Response): Promis
         avatarUrl: user.avatarUrl,
         bannerUrl: user.bannerUrl,
         bio: user.bio,
+        profileLocked: user.profileLocked,
         phone: user.phone,
         country: user.country,
         dateOfBirth: user.dateOfBirth,
@@ -679,6 +682,7 @@ router.patch('/me', jwtAuthMiddleware, async (req: Request, res: Response): Prom
       displayName,
       username,
       bio,
+      profileLocked,
       phone,
       country,
       dateOfBirth,
@@ -700,6 +704,7 @@ router.patch('/me', jwtAuthMiddleware, async (req: Request, res: Response): Prom
         displayName: typeof displayName === 'string' ? displayName : undefined,
         username: typeof username === 'string' ? username : undefined,
         bio: typeof bio === 'string' ? bio : undefined,
+        profileLocked: typeof profileLocked === 'boolean' ? profileLocked : undefined,
         phone: typeof phone === 'string' ? phone : undefined,
         country: typeof country === 'string' ? country : undefined,
         dateOfBirth: dateOfBirth ? new Date(dateOfBirth) : undefined,
@@ -721,6 +726,7 @@ router.patch('/me', jwtAuthMiddleware, async (req: Request, res: Response): Prom
         avatarUrl: updated.avatarUrl,
         bannerUrl: updated.bannerUrl,
         bio: updated.bio,
+        profileLocked: updated.profileLocked,
         phone: updated.phone,
         country: updated.country,
         dateOfBirth: updated.dateOfBirth,
