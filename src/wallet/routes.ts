@@ -70,6 +70,54 @@ const notifyWalletTransaction = async (params: {
   });
 };
 
+const upsertIndexerTransactions = async (userId: string, txItems: any[]) => {
+  let upserted = 0;
+  for (const txItem of txItems) {
+    try {
+      const existing = await prisma.walletTransaction.findUnique({
+        where: { txHash: txItem.txHash },
+        select: { id: true },
+      });
+      if (existing) {
+        continue;
+      }
+
+      await prisma.walletTransaction.create({
+        data: {
+          walletId: txItem.walletId,
+          txHash: txItem.txHash,
+          txType: txItem.txType,
+          amount: txItem.amount,
+          tokenAddress: txItem.tokenAddress,
+          tokenSymbol: txItem.tokenSymbol,
+          fromAddress: txItem.fromAddress,
+          toAddress: txItem.toAddress,
+          status: txItem.status || 'COMPLETED',
+          description:
+            txItem.tokenSymbol === 'USDC'
+              ? 'Indexed Solana transaction'
+              : 'Indexed Movement transaction',
+          metadata: { source: 'indexer', decimals: txItem.metadata?.decimals },
+        },
+      });
+
+      await notifyWalletTransaction({
+        userId,
+        txHash: txItem.txHash,
+        txType: txItem.txType,
+        tokenSymbol: txItem.tokenSymbol,
+        amount: txItem.amount,
+        decimals: txItem.metadata?.decimals,
+      });
+
+      upserted += 1;
+    } catch {
+      // ignore duplicates or invalid
+    }
+  }
+  return upserted;
+};
+
 const getMovementRpcUrls = () => {
   const urls = [MOVEMENT_RPC_URL, MOVEMENT_TESTNET_RPC, MOVEMENT_TESTNET_RPC_FALLBACK]
     .map((u) => (u || '').trim())
@@ -555,6 +603,25 @@ router.post('/sync/:walletId', async (req: Request, res: Response) => {
       await syncMovementBalance(wallet.id, wallet.address);
     } else if (wallet.blockchain === 'SOLANA') {
       await syncSolanaBalance(wallet.id, wallet.address);
+      const solanaActivities = await fetchSolanaUSDCHistory(wallet.address);
+      if (solanaActivities.length > 0) {
+        const solanaTxItems = solanaActivities.map((activity) => ({
+          id: `sol-${activity.txHash}`,
+          walletId: wallet.id,
+          txHash: activity.txHash,
+          txType: activity.txType,
+          amount: activity.amount,
+          tokenAddress: SOLANA_USDC_MINT,
+          tokenSymbol: 'USDC',
+          fromAddress: activity.fromAddress || wallet.address,
+          toAddress: activity.toAddress || wallet.address,
+          status: 'COMPLETED',
+          createdAt: activity.createdAt || new Date(),
+          source: 'indexer',
+          metadata: { decimals: activity.decimals },
+        }));
+        await upsertIndexerTransactions(userId, solanaTxItems);
+      }
     }
 
     // Get updated balances
@@ -721,45 +788,7 @@ router.get('/transactions', async (req: Request, res: Response) => {
     }
 
     if (syncIndexer && indexerTransactions.length > 0) {
-      for (const txItem of indexerTransactions) {
-        try {
-          const existing = await prisma.walletTransaction.findUnique({
-            where: { txHash: txItem.txHash },
-            select: { id: true },
-          });
-          if (existing) {
-            continue;
-          }
-
-          await prisma.walletTransaction.create({
-            data: {
-              walletId: txItem.walletId,
-              txHash: txItem.txHash,
-              txType: txItem.txType,
-              amount: txItem.amount,
-              tokenAddress: txItem.tokenAddress,
-              tokenSymbol: txItem.tokenSymbol,
-              fromAddress: txItem.fromAddress,
-              toAddress: txItem.toAddress,
-              status: txItem.status,
-              description:
-                txItem.tokenSymbol === 'USDC' ? 'Indexed Solana transaction' : 'Indexed Movement transaction',
-              metadata: { source: 'indexer', decimals: txItem.metadata?.decimals },
-            },
-          });
-
-          await notifyWalletTransaction({
-            userId,
-            txHash: txItem.txHash,
-            txType: txItem.txType,
-            tokenSymbol: txItem.tokenSymbol,
-            amount: txItem.amount,
-            decimals: txItem.metadata?.decimals,
-          });
-        } catch {
-          // ignore duplicates or invalid
-        }
-      }
+      await upsertIndexerTransactions(userId, indexerTransactions);
     }
 
     return res.json({
