@@ -5,6 +5,7 @@ import { AppError } from '../utils/errorHandler';
 import { syncMovementBalance, syncSolanaBalance } from './balanceIndexer';
 import axios from 'axios';
 import { createNotification } from '../notification/service';
+import { Connection, PublicKey } from '@solana/web3.js';
 
 const router = Router();
 const MOVEMENT_INDEXER_URL = process.env.MOVEMENT_INDEXER_URL || 'https://indexer.testnet.movementnetwork.xyz/v1/graphql';
@@ -13,6 +14,9 @@ const MOVEMENT_TESTNET_RPC_FALLBACK = process.env.MOVEMENT_TESTNET_RPC_FALLBACK 
 const MOVEMENT_RPC_URL = process.env.MOVEMENT_RPC_URL || '';
 const MOVEMENT_USDC_ADDRESS = (process.env.MOVEMENT_USDC_ADDRESS || '').trim().replace(/[>\s]+$/g, '');
 const MOVEMENT_NATIVE_TOKEN = '0x1::aptos_coin::AptosCoin';
+const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+const SOLANA_USDC_MINT = process.env.SOLANA_USDC_MINT || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const SOLANA_TX_HISTORY_LIMIT = Number.parseInt(process.env.SOLANA_TX_HISTORY_LIMIT || '50', 10);
 const toRawBigInt = (value: string | null | undefined) => {
   try {
     return BigInt(value || '0');
@@ -255,6 +259,145 @@ async function fetchMovementMoveHistory(walletAddress: string): Promise<any[]> {
   }
 }
 
+type SolanaIndexedTx = {
+  txHash: string;
+  txType: string;
+  amount: string;
+  decimals: number;
+  fromAddress?: string;
+  toAddress?: string;
+  createdAt?: Date;
+};
+
+const readSolanaTransfers = (parsedTx: any, tokenAccountSet: Set<string>) => {
+  const instructions = [
+    ...(parsedTx?.transaction?.message?.instructions || []),
+    ...(parsedTx?.meta?.innerInstructions?.flatMap((i: any) => i.instructions) || []),
+  ];
+  const transfers: Array<{
+    source?: string;
+    destination?: string;
+    mint?: string;
+    amount?: string;
+    decimals?: number;
+  }> = [];
+
+  for (const ix of instructions) {
+    const parsed = ix?.parsed;
+    const type = parsed?.type;
+    if (type !== 'transfer' && type !== 'transferChecked') continue;
+    const info = parsed?.info || {};
+    const source = info.source;
+    const destination = info.destination;
+    const mint = info.mint;
+    let amount = info.amount;
+    let decimals = info.tokenAmount?.decimals;
+    if (info.tokenAmount?.amount) amount = info.tokenAmount.amount;
+    if (!amount && typeof info.uiAmountString === 'string') amount = info.uiAmountString;
+
+    const touchesWallet =
+      (source && tokenAccountSet.has(source)) ||
+      (destination && tokenAccountSet.has(destination));
+    if (!touchesWallet) continue;
+
+    if (mint && mint !== SOLANA_USDC_MINT) continue;
+
+    transfers.push({ source, destination, mint, amount, decimals });
+  }
+
+  return transfers;
+};
+
+async function fetchSolanaUSDCHistory(walletAddress: string): Promise<SolanaIndexedTx[]> {
+  try {
+    const connection = new Connection(SOLANA_RPC_URL, 'confirmed');
+    const owner = new PublicKey(walletAddress);
+    const mint = new PublicKey(SOLANA_USDC_MINT);
+    const tokenAccounts = await connection.getParsedTokenAccountsByOwner(owner, { mint }, 'confirmed');
+    const tokenAccountKeys = tokenAccounts.value.map((account) => account.pubkey.toBase58());
+    if (!tokenAccountKeys.length) {
+      return [];
+    }
+
+    const signatureMap = new Map<string, { blockTime?: number }>();
+    for (const account of tokenAccountKeys) {
+      const signatures = await connection.getSignaturesForAddress(
+        new PublicKey(account),
+        { limit: SOLANA_TX_HISTORY_LIMIT }
+      );
+      for (const sig of signatures) {
+        if (!signatureMap.has(sig.signature)) {
+          signatureMap.set(sig.signature, { blockTime: sig.blockTime ?? undefined });
+        }
+      }
+    }
+
+    const orderedSignatures = Array.from(signatureMap.entries())
+      .sort((a, b) => (b[1].blockTime || 0) - (a[1].blockTime || 0))
+      .slice(0, SOLANA_TX_HISTORY_LIMIT)
+      .map(([signature]) => signature);
+
+    const tokenAccountSet = new Set(tokenAccountKeys);
+    const results: SolanaIndexedTx[] = [];
+
+    for (const signature of orderedSignatures) {
+      const parsedTx = await connection.getParsedTransaction(signature, {
+        maxSupportedTransactionVersion: 0,
+      });
+      if (!parsedTx?.meta) continue;
+
+      const preBalances =
+        (parsedTx.meta.preTokenBalances || []).filter(
+          (b: any) =>
+            b.mint === SOLANA_USDC_MINT &&
+            String(b.owner || '').toLowerCase() === walletAddress.toLowerCase()
+        );
+      const postBalances =
+        (parsedTx.meta.postTokenBalances || []).filter(
+          (b: any) =>
+            b.mint === SOLANA_USDC_MINT &&
+            String(b.owner || '').toLowerCase() === walletAddress.toLowerCase()
+        );
+
+      const decimals =
+        postBalances[0]?.uiTokenAmount?.decimals ??
+        preBalances[0]?.uiTokenAmount?.decimals ??
+        6;
+
+      const sumAmounts = (balances: any[]) =>
+        balances.reduce((acc, entry) => acc + toRawBigInt(entry.uiTokenAmount?.amount), BigInt(0));
+      const preSum = sumAmounts(preBalances);
+      const postSum = sumAmounts(postBalances);
+      const net = postSum - preSum;
+
+      if (net === BigInt(0)) continue;
+
+      const isDeposit = net > BigInt(0);
+      const amount = (isDeposit ? net : -net).toString();
+
+      const transfers = readSolanaTransfers(parsedTx, tokenAccountSet);
+      const preferred = transfers.find((t) =>
+        isDeposit ? tokenAccountSet.has(String(t.destination)) : tokenAccountSet.has(String(t.source))
+      );
+
+      results.push({
+        txHash: signature,
+        txType: isDeposit ? 'DEPOSIT' : 'WITHDRAW',
+        amount,
+        decimals,
+        fromAddress: isDeposit ? preferred?.source : walletAddress,
+        toAddress: isDeposit ? walletAddress : preferred?.destination,
+        createdAt: parsedTx.blockTime ? new Date(parsedTx.blockTime * 1000) : undefined,
+      });
+    }
+
+    return results;
+  } catch (error) {
+    logger.warn('Failed to fetch Solana USDC history', { error, walletAddress });
+    return [];
+  }
+}
+
 /**
  * GET /api/wallet/balances
  * Get all wallet balances for authenticated user
@@ -462,6 +605,10 @@ router.get('/transactions', async (req: Request, res: Response) => {
       const movementWallets = await prisma.wallet.findMany({
         where: { userId, blockchain: 'MOVEMENT' },
       });
+      const solanaWallets = await prisma.wallet.findMany({
+        where: { userId, blockchain: 'SOLANA' },
+      });
+
       for (const wallet of movementWallets) {
         const activities = await fetchMovementUSDCHistory(wallet.address);
         const moveActivities = await fetchMovementMoveHistory(wallet.address);
@@ -520,6 +667,27 @@ router.get('/transactions', async (req: Request, res: Response) => {
 
         indexerTransactions = indexerTransactions.concat(Array.from(byHash.values()));
       }
+
+      for (const wallet of solanaWallets) {
+        const solanaActivities = await fetchSolanaUSDCHistory(wallet.address);
+        for (const activity of solanaActivities) {
+          indexerTransactions.push({
+            id: `sol-${activity.txHash}`,
+            walletId: wallet.id,
+            txHash: activity.txHash,
+            txType: activity.txType,
+            amount: activity.amount,
+            tokenAddress: SOLANA_USDC_MINT,
+            tokenSymbol: 'USDC',
+            fromAddress: activity.fromAddress || wallet.address,
+            toAddress: activity.toAddress || wallet.address,
+            status: 'COMPLETED',
+            createdAt: activity.createdAt || new Date(),
+            source: 'indexer',
+            metadata: { decimals: activity.decimals },
+          });
+        }
+      }
     }
 
     if (syncIndexer && indexerTransactions.length > 0) {
@@ -544,7 +712,8 @@ router.get('/transactions', async (req: Request, res: Response) => {
               fromAddress: txItem.fromAddress,
               toAddress: txItem.toAddress,
               status: txItem.status,
-              description: 'Indexed Movement transaction',
+              description:
+                txItem.tokenSymbol === 'USDC' ? 'Indexed Solana transaction' : 'Indexed Movement transaction',
               metadata: { source: 'indexer', decimals: txItem.metadata?.decimals },
             },
           });
