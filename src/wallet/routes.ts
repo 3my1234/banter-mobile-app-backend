@@ -346,17 +346,31 @@ async function fetchSolanaUSDCHistory(walletAddress: string): Promise<SolanaInde
       });
       if (!parsedTx?.meta) continue;
 
+      const accountKeys = (parsedTx.transaction?.message?.accountKeys || []).map((key: any) => {
+        if (!key) return '';
+        if (typeof key === 'string') return key;
+        if (typeof key === 'object' && typeof key.pubkey?.toBase58 === 'function') {
+          return key.pubkey.toBase58();
+        }
+        if (typeof key?.toBase58 === 'function') return key.toBase58();
+        if (typeof key?.toString === 'function') return key.toString();
+        return String(key);
+      });
+
+      const isWalletTokenAccount = (entry: any) => {
+        const idx = entry?.accountIndex;
+        if (typeof idx !== 'number') return false;
+        const accountKey = accountKeys[idx];
+        return !!accountKey && tokenAccountSet.has(accountKey);
+      };
+
       const preBalances =
         (parsedTx.meta.preTokenBalances || []).filter(
-          (b: any) =>
-            b.mint === SOLANA_USDC_MINT &&
-            String(b.owner || '').toLowerCase() === walletAddress.toLowerCase()
+          (b: any) => b.mint === SOLANA_USDC_MINT && isWalletTokenAccount(b)
         );
       const postBalances =
         (parsedTx.meta.postTokenBalances || []).filter(
-          (b: any) =>
-            b.mint === SOLANA_USDC_MINT &&
-            String(b.owner || '').toLowerCase() === walletAddress.toLowerCase()
+          (b: any) => b.mint === SOLANA_USDC_MINT && isWalletTokenAccount(b)
         );
 
       const decimals =
@@ -371,14 +385,27 @@ async function fetchSolanaUSDCHistory(walletAddress: string): Promise<SolanaInde
         );
       const preSum = sumAmounts(preBalances);
       const postSum = sumAmounts(postBalances);
-      const net = postSum - preSum;
+      const transfers = readSolanaTransfers(parsedTx, tokenAccountSet);
+
+      let net = postSum - preSum;
+      if (net === 0n && transfers.length > 0) {
+        net = transfers.reduce((acc, t) => {
+          const raw = toRawBigInt(t.amount || '0');
+          if (t.destination && tokenAccountSet.has(String(t.destination))) {
+            return acc + raw;
+          }
+          if (t.source && tokenAccountSet.has(String(t.source))) {
+            return acc - raw;
+          }
+          return acc;
+        }, 0n);
+      }
 
       if (net === 0n) continue;
 
       const isDeposit = net > 0n;
       const amount = (isDeposit ? net : -net).toString();
 
-      const transfers = readSolanaTransfers(parsedTx, tokenAccountSet);
       const preferred = transfers.find((t) =>
         isDeposit ? tokenAccountSet.has(String(t.destination)) : tokenAccountSet.has(String(t.source))
       );
