@@ -136,11 +136,21 @@ const isNigeriaUser = (user?: { country?: string | null; phone?: string | null }
   const phoneDigits = (user?.phone || '').replace(/\D+/g, '');
   return phoneDigits.startsWith('234');
 };
-const resolveFlutterwaveCurrency = (requested: unknown, user?: { country?: string | null; phone?: string | null }) => {
+const resolveFlutterwaveCurrency = (
+  requested: unknown,
+  user?: { country?: string | null; phone?: string | null }
+) => {
   const normalized = typeof requested === 'string' ? requested.trim().toUpperCase() : '';
-  if (normalized === 'USD' || normalized === 'NGN') return normalized;
+  // Force NGN for Nigerian users to keep charges on local rails.
   if (isNigeriaUser(user)) return 'NGN';
+  if (normalized === 'USD' || normalized === 'NGN') return normalized;
   return 'USD';
+};
+const resolveFlutterwavePaymentOptions = (user?: { country?: string | null; phone?: string | null }) => {
+  if (isNigeriaUser(user)) {
+    return 'banktransfer,ussd,card';
+  }
+  return 'card';
 };
 const resolveFlutterwaveAmount = async (usdAmount: number, currency: string) => {
   if (currency === 'NGN') {
@@ -937,7 +947,7 @@ router.post('/flutterwave/rolley/create', async (req: Request, res: Response): P
         ...(logo ? { logo } : {}),
       },
       redirect_url: flutterwaveRedirectUrl,
-      payment_options: 'card',
+      payment_options: resolveFlutterwavePaymentOptions(user),
     };
 
     const initResult = await initializeFlutterwavePayment(initPayload);
@@ -1126,7 +1136,7 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
       },
       redirect_url: flutterwaveRedirectUrl,
       // Ensure card checkout is allowed
-      payment_options: 'card',
+      payment_options: resolveFlutterwavePaymentOptions(user),
     };
     logger.error('Flutterwave init payload', { initPayload });
     const initResult = await initializeFlutterwavePayment(initPayload);
