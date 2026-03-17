@@ -23,6 +23,9 @@ FROM node:20-alpine
 
 WORKDIR /app
 
+# Work around TLS issues in some build environments by using http alpine mirrors
+RUN sed -i 's/https:/http:/g' /etc/apk/repositories
+
 # Install netcat for database readiness check and OpenSSL for Prisma (Alpine/OpenSSL 3)
 RUN apk add --no-cache bash netcat-openbsd openssl libssl3
 
