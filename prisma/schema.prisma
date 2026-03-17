@@ -379,6 +379,39 @@ enum PaymentType {
   OTHER
 }
 
+enum AdPlacement {
+  POST_FEED
+  BANTER_FEED
+}
+
+model AdSettings {
+  id             String   @id @default(cuid())
+  postFrequency  Int      @default(6)
+  banterFrequency Int     @default(8)
+  isEnabled      Boolean  @default(true)
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model AdCampaign {
+  id         String      @id @default(cuid())
+  title      String
+  body       String?
+  mediaUrl   String?
+  mediaType  String?     // "image" or "video"
+  targetUrl  String?
+  ctaLabel   String?
+  placement  AdPlacement @default(POST_FEED)
+  isActive   Boolean     @default(true)
+  startsAt   DateTime?
+  endsAt     DateTime?
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+
+  @@index([placement, isActive])
+  @@index([startsAt, endsAt])
+}
+
 enum NotificationType {
   SYSTEM
   VOTE_PURCHASE
