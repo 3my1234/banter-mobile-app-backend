@@ -112,6 +112,40 @@ const safePcaCount = async (model: 'pcaCategory' | 'pcaVote') => {
   }
 };
 
+const DEFAULT_AD_SETTINGS = {
+  postFrequency: 6,
+  banterFrequency: 8,
+  isEnabled: true,
+};
+
+const getAdSettings = async () => {
+  const existing = await prisma.adSettings.findFirst();
+  if (existing) return existing;
+  return prisma.adSettings.create({ data: DEFAULT_AD_SETTINGS });
+};
+
+const parsePlacement = (value?: string) => {
+  const normalized = String(value || '').trim().toUpperCase();
+  if (!normalized) return 'POST_FEED';
+  if (normalized === 'POST_FEED' || normalized === 'BANTER_FEED') return normalized;
+  throw new AppError('Invalid placement. Use POST_FEED or BANTER_FEED.', 400);
+};
+
+const parseBool = (value: any, fallback: boolean) => {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    if (value.toLowerCase() === 'true') return true;
+    if (value.toLowerCase() === 'false') return false;
+  }
+  return fallback;
+};
+
+const parseIntField = (value: any, fallback: number) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.floor(parsed));
+};
+
 /**
  * POST /api/admin/auth/login
  */
@@ -149,6 +183,160 @@ router.post('/auth/login', async (req: Request, res: Response): Promise<void> =>
 });
 
 router.use(adminAuthMiddleware);
+
+/**
+ * GET /api/admin/ads/settings
+ */
+router.get('/ads/settings', async (_req: Request, res: Response): Promise<void> => {
+  try {
+    const settings = await getAdSettings();
+    res.json({ success: true, settings });
+  } catch (error) {
+    logger.error('Admin ad settings error', { error });
+    res.status(500).json({ success: false, message: 'Failed to load ad settings' });
+  }
+});
+
+/**
+ * PUT /api/admin/ads/settings
+ */
+router.put('/ads/settings', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const existing = await getAdSettings();
+    const postFrequency = parseIntField(req.body?.postFrequency, existing.postFrequency);
+    const banterFrequency = parseIntField(req.body?.banterFrequency, existing.banterFrequency);
+    const isEnabled = parseBool(req.body?.isEnabled, existing.isEnabled);
+
+    const updated = await prisma.adSettings.update({
+      where: { id: existing.id },
+      data: { postFrequency, banterFrequency, isEnabled },
+    });
+
+    res.json({ success: true, settings: updated });
+  } catch (error) {
+    logger.error('Admin update ad settings error', { error });
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({ success: false, message: error.message });
+      return;
+    }
+    res.status(500).json({ success: false, message: 'Failed to update ad settings' });
+  }
+});
+
+/**
+ * GET /api/admin/ads
+ */
+router.get('/ads', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { page, limit, skip } = getPagination(req);
+    const placement = req.query.placement ? parsePlacement(String(req.query.placement)) : undefined;
+    const where: any = {};
+    if (placement) where.placement = placement;
+    const [total, ads] = await Promise.all([
+      prisma.adCampaign.count({ where }),
+      prisma.adCampaign.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+    ]);
+    res.json({ success: true, ads, total, page, limit });
+  } catch (error) {
+    logger.error('Admin ads list error', { error });
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({ success: false, message: error.message });
+      return;
+    }
+    res.status(500).json({ success: false, message: 'Failed to load ads' });
+  }
+});
+
+/**
+ * POST /api/admin/ads
+ */
+router.post('/ads', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const title = String(req.body?.title || '').trim();
+    if (!title) {
+      throw new AppError('title is required', 400);
+    }
+    const placement = parsePlacement(req.body?.placement);
+    const mediaType = req.body?.mediaType ? String(req.body.mediaType) : null;
+    const created = await prisma.adCampaign.create({
+      data: {
+        title,
+        body: req.body?.body || null,
+        mediaUrl: req.body?.mediaUrl || null,
+        mediaType: mediaType || null,
+        targetUrl: req.body?.targetUrl || null,
+        ctaLabel: req.body?.ctaLabel || null,
+        placement: placement as any,
+        isActive: parseBool(req.body?.isActive, true),
+        startsAt: req.body?.startsAt ? new Date(req.body.startsAt) : null,
+        endsAt: req.body?.endsAt ? new Date(req.body.endsAt) : null,
+      },
+    });
+    res.json({ success: true, ad: created });
+  } catch (error) {
+    logger.error('Admin create ad error', { error });
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({ success: false, message: error.message });
+      return;
+    }
+    res.status(500).json({ success: false, message: 'Failed to create ad' });
+  }
+});
+
+/**
+ * PATCH /api/admin/ads/:id
+ */
+router.patch('/ads/:id', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = req.params.id;
+    if (!id) throw new AppError('id is required', 400);
+    const data: any = {};
+    if (req.body?.title !== undefined) data.title = String(req.body.title);
+    if (req.body?.body !== undefined) data.body = req.body.body || null;
+    if (req.body?.mediaUrl !== undefined) data.mediaUrl = req.body.mediaUrl || null;
+    if (req.body?.mediaType !== undefined) data.mediaType = req.body.mediaType || null;
+    if (req.body?.targetUrl !== undefined) data.targetUrl = req.body.targetUrl || null;
+    if (req.body?.ctaLabel !== undefined) data.ctaLabel = req.body.ctaLabel || null;
+    if (req.body?.placement !== undefined) data.placement = parsePlacement(req.body.placement);
+    if (req.body?.isActive !== undefined) data.isActive = parseBool(req.body.isActive, true);
+    if (req.body?.startsAt !== undefined) data.startsAt = req.body.startsAt ? new Date(req.body.startsAt) : null;
+    if (req.body?.endsAt !== undefined) data.endsAt = req.body.endsAt ? new Date(req.body.endsAt) : null;
+
+    const updated = await prisma.adCampaign.update({ where: { id }, data });
+    res.json({ success: true, ad: updated });
+  } catch (error) {
+    logger.error('Admin update ad error', { error });
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({ success: false, message: error.message });
+      return;
+    }
+    res.status(500).json({ success: false, message: 'Failed to update ad' });
+  }
+});
+
+/**
+ * DELETE /api/admin/ads/:id
+ */
+router.delete('/ads/:id', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const id = req.params.id;
+    if (!id) throw new AppError('id is required', 400);
+    await prisma.adCampaign.delete({ where: { id } });
+    res.json({ success: true });
+  } catch (error) {
+    logger.error('Admin delete ad error', { error });
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({ success: false, message: error.message });
+      return;
+    }
+    res.status(500).json({ success: false, message: 'Failed to delete ad' });
+  }
+});
 
 /**
  * POST /api/admin/uploads/presign

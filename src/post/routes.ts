@@ -367,6 +367,17 @@ router.get('/', async (req: Request, res: Response) => {
       {}
     );
 
+    const userReactionMap: Record<string, string> = {};
+    if (userId && postIds.length) {
+      const userReactions = await prisma.reaction.findMany({
+        where: { postId: { in: postIds }, userId },
+        select: { postId: true, type: true },
+      });
+      for (const reaction of userReactions) {
+        userReactionMap[reaction.postId] = reaction.type;
+      }
+    }
+
     const total = await prisma.post.count({
       where: whereClause,
     });
@@ -398,6 +409,7 @@ router.get('/', async (req: Request, res: Response) => {
           commentCount: post._count.comments,
           reactionCount: post._count.reactions,
           reactionBreakdown: reactionMap[post.id] || {},
+          userReaction: userReactionMap[post.id] || null,
           repostOf: post.repostOf,
         };
       }),
@@ -424,6 +436,7 @@ router.get('/', async (req: Request, res: Response) => {
 router.get('/:id', async (req: Request, res: Response) => {
   try {
     const postId = req.params.id;
+    const userId = req.user?.userId;
 
     const post = await prisma.post.findUnique({
       where: { id: postId },
@@ -497,6 +510,18 @@ router.get('/:id', async (req: Request, res: Response) => {
       {}
     );
 
+    const userReaction = userId
+      ? await prisma.reaction.findUnique({
+          where: {
+            postId_userId: {
+              postId,
+              userId,
+            },
+          },
+          select: { type: true },
+        })
+      : null;
+
     return res.json({
       success: true,
       post: {
@@ -520,6 +545,7 @@ router.get('/:id', async (req: Request, res: Response) => {
         commentCount: post._count.comments,
         reactionCount: post._count.reactions,
         reactionBreakdown,
+        userReaction: userReaction?.type || null,
         repostOf: post.repostOf,
       },
     });

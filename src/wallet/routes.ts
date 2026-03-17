@@ -791,9 +791,18 @@ router.get('/transactions', async (req: Request, res: Response) => {
       await upsertIndexerTransactions(userId, indexerTransactions);
     }
 
+    const mergedTransactions = includeIndexer
+      ? [...indexerTransactions, ...transactions]
+      : transactions;
+    mergedTransactions.sort((a: any, b: any) => {
+      const aTime = new Date(a.createdAt || 0).getTime();
+      const bTime = new Date(b.createdAt || 0).getTime();
+      return bTime - aTime;
+    });
+
     return res.json({
       success: true,
-      transactions: includeIndexer ? [...indexerTransactions, ...transactions] : transactions,
+      transactions: mergedTransactions,
       pagination: {
         page,
         limit,
