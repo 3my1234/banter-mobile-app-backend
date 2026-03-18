@@ -175,6 +175,36 @@ exports.handler = async (event) => {
             },
           ],
         },
+        {
+          Name: "MP4_DOWNLOAD",
+          OutputGroupSettings: {
+            Type: "FILE_GROUP_SETTINGS",
+            FileGroupSettings: {
+              Destination: `s3://${OUTPUT_BUCKET}/${outputPrefix}download`,
+            },
+          },
+          Outputs: [
+            {
+              VideoDescription: buildVideoDescription(1280, 720, 2500000),
+              AudioDescriptions: [
+                {
+                  CodecSettings: {
+                    Codec: "AAC",
+                    AacSettings: {
+                      Bitrate: 128000,
+                      CodingMode: "CODING_MODE_2_0",
+                      SampleRate: 48000,
+                    },
+                  },
+                },
+              ],
+              ContainerSettings: {
+                Container: "MP4",
+                Mp4Settings: {},
+              },
+            },
+          ],
+        },
       ],
     },
     UserMetadata: {
