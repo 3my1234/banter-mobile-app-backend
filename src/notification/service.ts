@@ -91,6 +91,14 @@ export const resolveNotificationMessage = (input: {
     return 'Someone interacted with your post/comment.';
   }
 
+  if (type === 'MESSAGE_REQUEST') {
+    return explicitBody || 'You have a new message request.';
+  }
+
+  if (type === 'DIRECT_MESSAGE') {
+    return explicitBody || 'You received a new direct message.';
+  }
+
   return toCleanString(input.title) || 'New notification';
 };
 

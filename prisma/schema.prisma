@@ -47,6 +47,10 @@ model User {
   pcaVotes        PcaVote[]
   followers       Follow[] @relation("UserFollowers")
   following       Follow[] @relation("UserFollowing")
+  conversationsAsUserA Conversation[] @relation("ConversationUserA")
+  conversationsAsUserB Conversation[] @relation("ConversationUserB")
+  requestedConversations Conversation[] @relation("ConversationRequester")
+  sentMessages    DirectMessage[] @relation("DirectMessageSender")
   
   createdAt       DateTime @default(now())
   updatedAt       DateTime @updatedAt
@@ -384,6 +388,12 @@ enum AdPlacement {
   BANTER_FEED
 }
 
+enum ConversationStatus {
+  PENDING
+  ACTIVE
+  REJECTED
+}
+
 model AdSettings {
   id             String   @id @default(cuid())
   postFrequency  Int      @default(6)
@@ -421,6 +431,46 @@ enum NotificationType {
   DAILY_ROL
   DAILY_POINTS
   XP
+  MESSAGE_REQUEST
+  DIRECT_MESSAGE
+}
+
+model Conversation {
+  id               String             @id @default(cuid())
+  userAId          String
+  userA            User               @relation("ConversationUserA", fields: [userAId], references: [id], onDelete: Cascade)
+  userBId          String
+  userB            User               @relation("ConversationUserB", fields: [userBId], references: [id], onDelete: Cascade)
+  requestedById    String
+  requestedBy      User               @relation("ConversationRequester", fields: [requestedById], references: [id], onDelete: Cascade)
+  status           ConversationStatus @default(PENDING)
+  approvedAt       DateTime?
+  rejectedAt       DateTime?
+  lastMessageAt    DateTime?
+  lastMessagePreview String?
+  messages         DirectMessage[]
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  @@unique([userAId, userBId])
+  @@index([userAId, status, lastMessageAt])
+  @@index([userBId, status, lastMessageAt])
+  @@index([requestedById, status])
+}
+
+model DirectMessage {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         User         @relation("DirectMessageSender", fields: [senderId], references: [id], onDelete: Cascade)
+  body           String
+  readAt         DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+  @@index([senderId, createdAt])
+  @@index([conversationId, readAt])
 }
 
 enum PointLedgerType {

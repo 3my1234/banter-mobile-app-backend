@@ -13,6 +13,14 @@ Required env vars:
 - `MEDIACONVERT_ENDPOINT` (optional; if not set, Lambda discovers it)
 - `OUTPUT_BUCKET` (same bucket or a dedicated `baze-bucket-hls`)
 - `HLS_PREFIX` (e.g. `hls/`)
+- Optional branding:
+  - `BRAND_WATERMARK_S3_URL` (S3 URL to PNG logo watermark)
+  - `BRAND_OUTRO_S3_URL` (S3 URL to MP4 outro/end-card clip)
+  - `BRAND_WATERMARK_WIDTH`
+  - `BRAND_WATERMARK_HEIGHT`
+  - `BRAND_WATERMARK_X`
+  - `BRAND_WATERMARK_Y`
+  - `BRAND_WATERMARK_OPACITY`
 
 ## 2) Completion Lambda (MediaConvert Event)
 File: `complete-job.js`
@@ -34,3 +42,6 @@ You can paste it into the MediaConvert console as a template.
 - You still need to create the MediaConvert IAM Role with S3 read/write.
 - If your CloudFront is in front of the same bucket, use the same bucket for HLS outputs.
 - The completion Lambda updates Post.mediaUrl to the `.m3u8` manifest URL.
+- Post videos are uploaded under `user-uploads/<userId>/post/branded/` automatically:
+  - watermark is applied only if `BRAND_WATERMARK_S3_URL` is set
+  - outro clip is appended if `BRAND_OUTRO_S3_URL` is set
