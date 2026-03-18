@@ -128,7 +128,7 @@ app.use(errorHandler);
 setupWebSocket(io);
 
 // Setup Queue Workers
-setupQueueWorkers();
+void setupQueueWorkers();
 
 // Start server
 const PORT = process.env.PORT || 3001;
