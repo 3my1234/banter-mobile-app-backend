@@ -86,49 +86,60 @@ const FX_RATE_TTL_MS = Math.max(
   60_000,
   Number(process.env.FX_RATE_TTL_SECONDS || 900) * 1000
 );
-let cachedFxRate: { rate: number; expiresAt: number } | null = null;
-const getFlutterwaveFxRate = async () => {
-  const now = Date.now();
-  if (cachedFxRate && cachedFxRate.expiresAt > now) {
-    return cachedFxRate.rate;
+let cachedFxRates: { rates: Record<string, number>; expiresAt: number } | null = null;
+const getUsdFxRate = async (currency: string) => {
+  const target = currency.toUpperCase();
+  if (target === 'USD') {
+    return 1;
   }
+
+  const now = Date.now();
+  if (cachedFxRates && cachedFxRates.expiresAt > now && cachedFxRates.rates[target]) {
+    return cachedFxRates.rates[target];
+  }
+
   const configured = parseFxRate(
     process.env.FLUTTERWAVE_NGN_RATE || process.env.EXCHANGE_RATE_USD_NGN
   );
-  if (configured) {
-    cachedFxRate = { rate: configured, expiresAt: now + FX_RATE_TTL_MS };
+  if (target === 'NGN' && configured) {
+    cachedFxRates = {
+      rates: { ...(cachedFxRates?.rates || {}), NGN: configured },
+      expiresAt: now + FX_RATE_TTL_MS,
+    };
     return configured;
   }
+
   const sources = [
     async () => {
       const response = await axios.get('https://open.er-api.com/v6/latest/USD', {
         timeout: 5000,
       });
-      return Number(response?.data?.rates?.NGN || 0);
+      return response?.data?.rates || {};
     },
     async () => {
-      if (!EXCHANGERATE_HOST_KEY) return 0;
+      if (target !== 'NGN' || !EXCHANGERATE_HOST_KEY) return {};
       const base = 'https://api.exchangerate.host/latest?base=USD&symbols=NGN';
       const url = `${base}&access_key=${encodeURIComponent(EXCHANGERATE_HOST_KEY)}`;
       const response = await axios.get(url, { timeout: 5000 });
       if (response?.data?.success === false) {
-        return 0;
+        return {};
       }
-      return Number(response?.data?.rates?.NGN || 0);
+      return response?.data?.rates || {};
     },
   ];
   for (const fetchRate of sources) {
     try {
-      const rate = await fetchRate();
+      const rates = await fetchRate();
+      const rate = Number(rates?.[target] || 0);
       if (Number.isFinite(rate) && rate > 0) {
-        cachedFxRate = { rate, expiresAt: now + FX_RATE_TTL_MS };
+        cachedFxRates = { rates, expiresAt: now + FX_RATE_TTL_MS };
         return rate;
       }
     } catch {
       // try next provider
     }
   }
-  throw new AppError('Unable to fetch USD->NGN rate', 500);
+  throw new AppError(`Unable to fetch USD->${target} rate`, 500);
 };
 const isNigeriaUser = (user?: { country?: string | null; phone?: string | null }) => {
   const country = (user?.country || '').trim().toLowerCase();
@@ -136,14 +147,42 @@ const isNigeriaUser = (user?: { country?: string | null; phone?: string | null }
   const phoneDigits = (user?.phone || '').replace(/\D+/g, '');
   return phoneDigits.startsWith('234');
 };
+
+const EURO_COUNTRY_CODES = new Set([
+  'at', 'be', 'cy', 'de', 'ee', 'es', 'fi', 'fr', 'gr', 'hr', 'ie', 'it', 'lt',
+  'lu', 'lv', 'mt', 'nl', 'pt', 'si', 'sk',
+]);
+
+const EURO_COUNTRY_NAMES = new Set([
+  'austria', 'belgium', 'cyprus', 'germany', 'estonia', 'spain', 'finland',
+  'france', 'greece', 'croatia', 'ireland', 'italy', 'lithuania', 'luxembourg',
+  'latvia', 'malta', 'netherlands', 'portugal', 'slovenia', 'slovakia',
+]);
+
+const normalizeUserCountry = (user?: { country?: string | null }) =>
+  (user?.country || '').trim().toLowerCase();
+
+const isUkUser = (user?: { country?: string | null }) => {
+  const country = normalizeUserCountry(user);
+  return country === 'uk' || country === 'gb' || country === 'united kingdom' || country === 'great britain';
+};
+
+const isEuroUser = (user?: { country?: string | null }) => {
+  const country = normalizeUserCountry(user);
+  return EURO_COUNTRY_CODES.has(country) || EURO_COUNTRY_NAMES.has(country);
+};
+
 const resolveFlutterwaveCurrency = (
   requested: unknown,
   user?: { country?: string | null; phone?: string | null }
 ) => {
   const normalized = typeof requested === 'string' ? requested.trim().toUpperCase() : '';
-  // Force NGN for Nigerian users to keep charges on local rails.
   if (isNigeriaUser(user)) return 'NGN';
-  if (normalized === 'USD' || normalized === 'NGN') return normalized;
+  if (isUkUser(user)) return 'GBP';
+  if (isEuroUser(user)) return 'EUR';
+  if (normalized === 'USD' || normalized === 'NGN' || normalized === 'GBP' || normalized === 'EUR') {
+    return normalized;
+  }
   return 'USD';
 };
 const resolveFlutterwavePaymentOptions = (user?: { country?: string | null; phone?: string | null }) => {
@@ -153,11 +192,8 @@ const resolveFlutterwavePaymentOptions = (user?: { country?: string | null; phon
   return 'card';
 };
 const resolveFlutterwaveAmount = async (usdAmount: number, currency: string) => {
-  if (currency === 'NGN') {
-    const rate = await getFlutterwaveFxRate();
-    if (!rate) {
-      throw new AppError('Unable to fetch USD->NGN rate', 500);
-    }
+  if (currency !== 'USD') {
+    const rate = await getUsdFxRate(currency);
     const converted = Math.round(usdAmount * rate * 100) / 100;
     return converted;
   }
@@ -916,7 +952,7 @@ router.post('/flutterwave/rolley/create', async (req: Request, res: Response): P
           lockDays: parsedLockDays,
           stakeAsset: 'USD',
           usdAmount: parsedAmount,
-          fxRate: currency === 'NGN' ? await getFlutterwaveFxRate() : null,
+          fxRate: currency !== 'USD' ? await getUsdFxRate(currency) : null,
         },
       },
     });
@@ -1105,7 +1141,7 @@ router.post('/flutterwave/votes/create', async (req: Request, res: Response): Pr
           txRef,
           appRedirectUrl,
           usdAmount: bundle.price,
-          fxRate: currency === 'NGN' ? await getFlutterwaveFxRate() : null,
+            fxRate: currency !== 'USD' ? await getUsdFxRate(currency) : null,
         },
       },
     });
