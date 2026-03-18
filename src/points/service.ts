@@ -107,18 +107,24 @@ export const awardDailyLoginPoints = async (
   });
 
   if (rewardUpdate.count > 0) {
-    await tx.pointLedger.create({
-      data: {
-        userId,
-        type: 'LOGIN',
-        pointsRaw: DAILY_BANTER_POINTS_RAW,
-        reference,
-        metadata: {
-          source: 'auth',
-          dayKey,
+    try {
+      await tx.pointLedger.create({
+        data: {
+          userId,
+          type: 'LOGIN',
+          pointsRaw: DAILY_BANTER_POINTS_RAW,
+          reference,
+          metadata: {
+            source: 'auth',
+            dayKey,
+          },
         },
-      },
-    });
+      });
+    } catch (error: any) {
+      if (error?.code !== 'P2002') {
+        throw error;
+      }
+    }
   }
 
   return {
