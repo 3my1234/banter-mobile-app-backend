@@ -338,16 +338,16 @@ router.delete('/ads/:id', async (req: Request, res: Response): Promise<void> => 
   }
 });
 
-/**
- * POST /api/admin/uploads/presign
- * Generate presigned upload URL for PCA assets.
- */
-router.post('/uploads/presign', async (req: Request, res: Response): Promise<void> => {
-  try {
-    const { filename, mimeType, kind } = req.body || {};
-    if (!filename || !mimeType) {
-      throw new AppError('filename and mimeType are required', 400);
-    }
+  /**
+   * POST /api/admin/uploads/presign
+   * Generate presigned upload URL for admin assets (PCA, ads).
+   */
+  router.post('/uploads/presign', async (req: Request, res: Response): Promise<void> => {
+    try {
+      const { filename, mimeType, kind, scope } = req.body || {};
+      if (!filename || !mimeType) {
+        throw new AppError('filename and mimeType are required', 400);
+      }
 
     const mime = String(mimeType).trim().toLowerCase();
     const isImage = mime.startsWith('image/');
@@ -356,11 +356,13 @@ router.post('/uploads/presign', async (req: Request, res: Response): Promise<voi
       throw new AppError('mimeType must be image/* or video/*', 400);
     }
 
-    const assetKind = kind === 'video' || kind === 'image' ? kind : isVideo ? 'video' : 'image';
-    const safeFilename = String(filename).replace(/[^a-zA-Z0-9.-]/g, '_');
-    const timestamp = Date.now();
-    // Reuse user-uploads prefix so existing public bucket/CDN policy also serves admin PCA media.
-    const key = `user-uploads/admin/pca/${assetKind}/${timestamp}_${safeFilename}`;
+      const assetKind = kind === 'video' || kind === 'image' ? kind : isVideo ? 'video' : 'image';
+      const scopeRaw = typeof scope === 'string' ? scope.trim().toLowerCase() : '';
+      const assetScope = scopeRaw === 'ads' ? 'ads' : 'pca';
+      const safeFilename = String(filename).replace(/[^a-zA-Z0-9.-]/g, '_');
+      const timestamp = Date.now();
+      // Reuse user-uploads prefix so existing public bucket/CDN policy also serves admin media.
+      const key = `user-uploads/admin/${assetScope}/${assetKind}/${timestamp}_${safeFilename}`;
 
     const putCommand = new PutObjectCommand({
       Bucket: BUCKET_NAME,
