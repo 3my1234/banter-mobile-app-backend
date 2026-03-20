@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { jwtAuthMiddleware } from '../auth/jwtMiddleware';
 import { prisma } from '../index';
 import { logger } from '../utils/logger';
 import { AppError } from '../utils/errorHandler';
@@ -40,7 +41,7 @@ const normalizeKey = (raw: string) => {
   return key;
 };
 
-router.post('/download-url', async (req: Request, res: Response) => {
+router.post('/download-url', jwtAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
