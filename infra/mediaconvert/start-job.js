@@ -55,6 +55,20 @@ exports.handler = async (event) => {
     },
   });
 
+  const buildDownloadVideoDescription = (maxBitrate) => ({
+    CodecSettings: {
+      Codec: "H_264",
+      H264Settings: {
+        RateControlMode: "QVBR",
+        MaxBitrate: maxBitrate,
+        GopSize: 2,
+        GopSizeUnits: "SECONDS",
+        QvbrSettings: { QvbrQualityLevel: 7 },
+        SceneChangeDetect: "TRANSITION_DETECTION",
+      },
+    },
+  });
+
   const inputs = [
     {
       FileInput: inputUrl,
@@ -146,7 +160,7 @@ exports.handler = async (event) => {
           },
           Outputs: [
             {
-              VideoDescription: buildVideoDescription(1280, 720, 2500000),
+              VideoDescription: buildDownloadVideoDescription(2500000),
               AudioDescriptions: [
                 {
                   CodecSettings: {
