@@ -104,11 +104,8 @@ router.post('/presign', async (req: Request, res: Response) => {
     // Generate S3 key (same structure as legacy)
     const timestamp = Date.now();
     const sanitizedFilename = filename.replace(/[^a-zA-Z0-9.-]/g, '_');
-    const shouldBrandVideo = isVideo && type === 'post';
     const key = type
-      ? shouldBrandVideo
-        ? `user-uploads/${user.id}/${type}/branded/${timestamp}_${sanitizedFilename}`
-        : `user-uploads/${user.id}/${type}/${timestamp}_${sanitizedFilename}`
+      ? `user-uploads/${user.id}/${type}/${timestamp}_${sanitizedFilename}`
       : `user-uploads/${user.id}/${timestamp}_${sanitizedFilename}`;
 
     // Generate presigned PUT URL for upload (15 minutes)

@@ -10,13 +10,6 @@ const ROLE_ARN = process.env.MEDIACONVERT_ROLE_ARN;
 const OUTPUT_BUCKET = process.env.OUTPUT_BUCKET;
 const HLS_PREFIX = process.env.HLS_PREFIX || "hls/";
 const ENDPOINT = process.env.MEDIACONVERT_ENDPOINT;
-const BRAND_WATERMARK_S3_URL = process.env.BRAND_WATERMARK_S3_URL || "";
-const BRAND_OUTRO_S3_URL = process.env.BRAND_OUTRO_S3_URL || "";
-const BRAND_WATERMARK_WIDTH = Number(process.env.BRAND_WATERMARK_WIDTH || 180);
-const BRAND_WATERMARK_HEIGHT = Number(process.env.BRAND_WATERMARK_HEIGHT || 56);
-const BRAND_WATERMARK_X = Number(process.env.BRAND_WATERMARK_X || 40);
-const BRAND_WATERMARK_Y = Number(process.env.BRAND_WATERMARK_Y || 40);
-const BRAND_WATERMARK_OPACITY = Number(process.env.BRAND_WATERMARK_OPACITY || 70);
 
 if (!ROLE_ARN || !OUTPUT_BUCKET) {
   throw new Error("MEDIACONVERT_ROLE_ARN and OUTPUT_BUCKET are required");
@@ -45,7 +38,6 @@ exports.handler = async (event) => {
   const inputUrl = `s3://${bucket}/${key}`;
   const baseName = key.replace(/^user-uploads\//, "").replace(/\.[^.]+$/, "");
   const outputPrefix = `${HLS_PREFIX}${baseName}/`;
-  const shouldBrand = key.includes("/post/branded/");
 
   const buildVideoDescription = (width, height, maxBitrate) => ({
     Width: width,
@@ -61,25 +53,6 @@ exports.handler = async (event) => {
         SceneChangeDetect: "TRANSITION_DETECTION",
       },
     },
-    ...(shouldBrand && BRAND_WATERMARK_S3_URL
-      ? {
-          VideoPreprocessors: {
-            ImageInserter: {
-              InsertableImages: [
-                {
-                  ImageInserterInput: BRAND_WATERMARK_S3_URL,
-                  Layer: 1,
-                  Opacity: BRAND_WATERMARK_OPACITY,
-                  ImageX: BRAND_WATERMARK_X,
-                  ImageY: BRAND_WATERMARK_Y,
-                  Width: BRAND_WATERMARK_WIDTH,
-                  Height: BRAND_WATERMARK_HEIGHT,
-                },
-              ],
-            },
-          },
-        }
-      : {}),
   });
 
   const inputs = [
@@ -93,18 +66,6 @@ exports.handler = async (event) => {
       VideoSelector: {},
     },
   ];
-
-  if (shouldBrand && BRAND_OUTRO_S3_URL) {
-    inputs.push({
-      FileInput: BRAND_OUTRO_S3_URL,
-      AudioSelectors: {
-        "Audio Selector 1": {
-          DefaultSelection: "DEFAULT",
-        },
-      },
-      VideoSelector: {},
-    });
-  }
 
   const job = {
     Role: ROLE_ARN,
@@ -210,7 +171,6 @@ exports.handler = async (event) => {
     UserMetadata: {
       s3Key: key,
       outputPrefix,
-      branded: shouldBrand ? "1" : "0",
     },
   };
 
