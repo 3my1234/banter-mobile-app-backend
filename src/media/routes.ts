@@ -131,22 +131,20 @@ router.post('/download-url', jwtAuthMiddleware, async (req: Request, res: Respon
 
     if (/\.m3u8$/i.test(key)) {
       const mp4Key = key.replace(/\/[^/]+\.m3u8$/i, '/download.mp4');
+      const originalKey = await findOriginalSourceKeyFromHlsKey(key);
 
-      if (await objectExists(mp4Key)) {
-        resolvedKey = mp4Key;
-        strategy = 'processed-mp4';
-      } else {
-        const originalKey = await findOriginalSourceKeyFromHlsKey(key);
-        if (!originalKey) {
-          return res.status(404).json({
-            success: false,
-            message: 'No downloadable video found for this media',
-            details: { hlsKey: key, attemptedMp4Key: mp4Key },
-          });
-        }
-
+      if (originalKey) {
         resolvedKey = originalKey;
-        strategy = 'original-source-fallback';
+        strategy = 'original-source';
+      } else if (await objectExists(mp4Key)) {
+        resolvedKey = mp4Key;
+        strategy = 'processed-mp4-fallback';
+      } else {
+        return res.status(404).json({
+          success: false,
+          message: 'No downloadable video found for this media',
+          details: { hlsKey: key, attemptedMp4Key: mp4Key },
+        });
       }
     } else if (!(await objectExists(resolvedKey))) {
       return res.status(404).json({
