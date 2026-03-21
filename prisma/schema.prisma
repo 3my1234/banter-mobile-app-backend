@@ -107,6 +107,7 @@ model Post {
   imageUrl        String?  // Deprecated: use mediaUrl instead
   mediaUrl        String?  // Image or video URL
   mediaType       String?  // "image" or "video"
+  mediaItems      Json?    // Ordered media items for multi-image posts
   isRoast         Boolean  @default(false) // Is this a roast post?
   
   // Voting counts

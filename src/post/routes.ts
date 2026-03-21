@@ -19,6 +19,11 @@ const s3Client = new S3Client({
 
 const BUCKET_NAME = process.env.S3_BUCKET_NAME || process.env.AWS_S3_BUCKET_NAME || '';
 
+type NormalizedMediaItem = {
+  url: string;
+  type: 'image' | 'video';
+};
+
 function extractKeyFromUrl(url?: string | null): string | null {
   if (!url) return null;
   try {
@@ -88,6 +93,78 @@ async function deletePostMedia(mediaUrl?: string | null) {
   }
 }
 
+function normalizeMediaTypeValue(value?: string | null): 'image' | 'video' | null {
+  if (!value) return null;
+  const lower = value.trim().toLowerCase();
+  if (lower === 'image' || lower === 'video') {
+    return lower;
+  }
+  return null;
+}
+
+function normalizeMediaItems(
+  mediaItemsInput: unknown,
+  fallbackMediaUrl?: string | null,
+  fallbackMediaType?: string | null
+): NormalizedMediaItem[] {
+  const normalized: NormalizedMediaItem[] = [];
+
+  if (Array.isArray(mediaItemsInput)) {
+    for (const rawItem of mediaItemsInput) {
+      if (!rawItem || typeof rawItem !== 'object') continue;
+      const nextUrl =
+        typeof (rawItem as any).url === 'string'
+          ? (rawItem as any).url.trim()
+          : '';
+      const nextType = normalizeMediaTypeValue((rawItem as any).type);
+      if (!nextUrl || !nextType) continue;
+      normalized.push({ url: nextUrl, type: nextType });
+    }
+  }
+
+  if (!normalized.length && fallbackMediaUrl) {
+    const nextType = normalizeMediaTypeValue(fallbackMediaType) || normalizeMediaTypeValue(
+      /\.(mp4|mov|m4v|webm|m3u8)(\?|$)/i.test(fallbackMediaUrl) ? 'video' : 'image'
+    );
+    if (nextType) {
+      normalized.push({
+        url: fallbackMediaUrl.trim(),
+        type: nextType,
+      });
+    }
+  }
+
+  return normalized;
+}
+
+function getSerializableMediaItems(
+  mediaItemsInput: unknown,
+  fallbackMediaUrl?: string | null,
+  fallbackMediaType?: string | null
+): NormalizedMediaItem[] {
+  return normalizeMediaItems(mediaItemsInput, fallbackMediaUrl, fallbackMediaType);
+}
+
+async function deletePostMediaCollection(input: {
+  mediaUrl?: string | null;
+  mediaItems?: unknown;
+}) {
+  const targets = new Set<string>();
+  for (const item of getSerializableMediaItems(
+    input.mediaItems,
+    input.mediaUrl,
+    null
+  )) {
+    if (item.url) targets.add(item.url);
+  }
+  if (input.mediaUrl) {
+    targets.add(input.mediaUrl);
+  }
+  for (const url of targets) {
+    await deletePostMedia(url);
+  }
+}
+
 /**
  * POST /api/posts
  * Create a new post
@@ -99,14 +176,27 @@ router.post('/', async (req: Request, res: Response) => {
       throw new AppError('User not authenticated', 401);
     }
 
-    const { content, mediaUrl, mediaType, isRoast, tags, league } = req.body;
+    const { content, mediaUrl, mediaType, mediaItems, isRoast, tags, league } = req.body;
 
     if (!content || content.trim().length === 0) {
       throw new AppError('Post content is required', 400);
     }
 
-    // Validate mediaType if mediaUrl is provided
-    if (mediaUrl && mediaType && !['image', 'video'].includes(mediaType)) {
+    const normalizedMediaItems = normalizeMediaItems(mediaItems, mediaUrl, mediaType);
+    if (normalizedMediaItems.length > 6) {
+      throw new AppError('You can upload up to 6 images per post', 400);
+    }
+    if (normalizedMediaItems.length > 1) {
+      if (isRoast === true) {
+        throw new AppError('Roast posts currently support only one media item', 400);
+      }
+      if (normalizedMediaItems.some((item) => item.type !== 'image')) {
+        throw new AppError('Multiple media uploads currently support images only', 400);
+      }
+    }
+
+    const primaryMedia = normalizedMediaItems[0] || null;
+    if (mediaUrl && mediaType && !normalizeMediaTypeValue(mediaType)) {
       throw new AppError('mediaType must be "image" or "video"', 400);
     }
 
@@ -159,8 +249,9 @@ router.post('/', async (req: Request, res: Response) => {
       data: {
         userId: user.id,
         content: content.trim(),
-        mediaUrl: mediaUrl || null,
-        mediaType: mediaType || null,
+        mediaUrl: primaryMedia?.url || null,
+        mediaType: primaryMedia?.type || null,
+        mediaItems: normalizedMediaItems.length ? (normalizedMediaItems as any) : null,
         isRoast: isRoast === true,
         tags: tagArray,
         league: league || null,
@@ -204,6 +295,7 @@ router.post('/', async (req: Request, res: Response) => {
         content: post.content,
         mediaUrl: post.mediaUrl,
         mediaType: post.mediaType,
+        mediaItems: getSerializableMediaItems(post.mediaItems, post.mediaUrl, post.mediaType),
         isRoast: post.isRoast,
         tags: post.tags,
         league: post.league,
@@ -328,6 +420,7 @@ router.get('/', async (req: Request, res: Response) => {
             content: true,
             mediaUrl: true,
             mediaType: true,
+            mediaItems: true,
             isRoast: true,
             tags: true,
             league: true,
@@ -394,6 +487,7 @@ router.get('/', async (req: Request, res: Response) => {
           content: post.content,
           mediaUrl: post.mediaUrl,
           mediaType: post.mediaType,
+          mediaItems: getSerializableMediaItems(post.mediaItems, post.mediaUrl, post.mediaType),
           isRoast: post.isRoast,
           tags: post.tags,
           league: post.league,
@@ -473,6 +567,7 @@ router.get('/:id', async (req: Request, res: Response) => {
             content: true,
             mediaUrl: true,
             mediaType: true,
+            mediaItems: true,
             isRoast: true,
             tags: true,
             league: true,
@@ -529,6 +624,7 @@ router.get('/:id', async (req: Request, res: Response) => {
         content: post.content,
         mediaUrl: post.mediaUrl,
         mediaType: post.mediaType,
+        mediaItems: getSerializableMediaItems(post.mediaItems, post.mediaUrl, post.mediaType),
         isRoast: post.isRoast,
         tags: post.tags,
         league: post.league,
@@ -618,6 +714,7 @@ router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
             content: true,
             mediaUrl: true,
             mediaType: true,
+            mediaItems: true,
             isRoast: true,
             tags: true,
             league: true,
@@ -642,6 +739,7 @@ router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
         content: updated.content,
         mediaUrl: updated.mediaUrl,
         mediaType: updated.mediaType,
+        mediaItems: getSerializableMediaItems(updated.mediaItems, updated.mediaUrl, updated.mediaType),
         isRoast: updated.isRoast,
         tags: updated.tags,
         league: updated.league,
@@ -694,7 +792,10 @@ router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => 
     }
 
     if (post.status !== 'ACTIVE') {
-      await deletePostMedia(post.mediaUrl);
+      await deletePostMediaCollection({
+        mediaUrl: post.mediaUrl,
+        mediaItems: post.mediaItems,
+      });
       await prisma.$transaction(async (tx) => {
         await tx.comment.deleteMany({ where: { postId } });
         await tx.reaction.deleteMany({ where: { postId } });
@@ -705,7 +806,10 @@ router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => 
       return res.json({ success: true });
     }
 
-    await deletePostMedia(post.mediaUrl);
+    await deletePostMediaCollection({
+      mediaUrl: post.mediaUrl,
+      mediaItems: post.mediaItems,
+    });
 
     const updated = await prisma.$transaction(async (tx) => {
       await tx.comment.deleteMany({ where: { postId } });

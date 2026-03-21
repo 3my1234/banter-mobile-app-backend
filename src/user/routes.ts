@@ -5,6 +5,44 @@ import { AppError } from '../utils/errorHandler';
 
 const router = Router();
 
+const normalizeMediaTypeValue = (value?: string | null): 'image' | 'video' | null => {
+  if (!value) return null;
+  const lower = value.trim().toLowerCase();
+  if (lower === 'image' || lower === 'video') return lower;
+  return null;
+};
+
+const serializeMediaItems = (
+  mediaItemsInput: unknown,
+  fallbackMediaUrl?: string | null,
+  fallbackMediaType?: string | null
+) => {
+  const normalized = Array.isArray(mediaItemsInput)
+    ? mediaItemsInput
+        .map((item) => {
+          if (!item || typeof item !== 'object') return null;
+          const url = typeof (item as any).url === 'string' ? (item as any).url.trim() : '';
+          const type = normalizeMediaTypeValue((item as any).type);
+          if (!url || !type) return null;
+          return { url, type };
+        })
+        .filter((item): item is { url: string; type: 'image' | 'video' } => !!item)
+    : [];
+
+  if (normalized.length) return normalized;
+  const fallbackType =
+    normalizeMediaTypeValue(fallbackMediaType) ||
+    (fallbackMediaUrl && /\.(mp4|mov|m4v|webm|m3u8)(\?|$)/i.test(fallbackMediaUrl)
+      ? 'video'
+      : fallbackMediaUrl
+        ? 'image'
+        : null);
+  if (fallbackMediaUrl && fallbackType) {
+    return [{ url: fallbackMediaUrl, type: fallbackType }];
+  }
+  return [];
+};
+
 /**
  * GET /api/users/:id/posts
  * Get all posts by a specific user (for Profile page)
@@ -107,6 +145,7 @@ router.get('/:id/posts', async (req: Request, res: Response) => {
         content: post.content,
         mediaUrl: post.mediaUrl,
         mediaType: post.mediaType,
+        mediaItems: serializeMediaItems(post.mediaItems, post.mediaUrl, post.mediaType),
         isRoast: post.isRoast,
         tags: post.tags,
         league: post.league,
