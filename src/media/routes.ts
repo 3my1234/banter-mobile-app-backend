@@ -1,6 +1,5 @@
 import { Router, Request, Response } from 'express';
-import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
-import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
+import { HeadObjectCommand, ListObjectsV2Command, S3Client } from '@aws-sdk/client-s3';
 import { jwtAuthMiddleware } from '../auth/jwtMiddleware';
 import { prisma } from '../index';
 import { logger } from '../utils/logger';
@@ -10,6 +9,7 @@ const router = Router();
 
 const getMediaSecret = () => process.env.MEDIA_PIPELINE_SECRET || '';
 const BUCKET_NAME = process.env.S3_BUCKET_NAME || process.env.AWS_S3_BUCKET_NAME || 'banter-uploads';
+const VIDEO_SOURCE_EXTENSIONS = ['.mp4', '.mov', '.m4v', '.webm'];
 
 const s3Client = new S3Client({
   region: process.env.AWS_REGION || 'eu-north-1',
@@ -41,6 +41,74 @@ const normalizeKey = (raw: string) => {
   return key;
 };
 
+const getBackendPublicBase = (req?: Request) => {
+  const candidates = [
+    process.env.BACKEND_PUBLIC_URL,
+    process.env.API_URL,
+    req ? `${req.protocol}://${req.get('host') || ''}` : '',
+  ];
+  const picked = candidates.find((value) => typeof value === 'string' && /^https?:\/\//i.test(value));
+  if (!picked) return 'https://sportbanter.online';
+  return picked.trim().replace(/\/+$/, '').replace(/\/api$/, '');
+};
+
+const encodeKeyForView = (key: string) =>
+  key
+    .replace(/^\/+/, '')
+    .split('/')
+    .map((part) => encodeURIComponent(part))
+    .join('/');
+
+const toPublicViewUrl = (req: Request, key: string) =>
+  `${getBackendPublicBase(req)}/api/public/images/view/${encodeKeyForView(key)}`;
+
+const objectExists = async (key: string) => {
+  try {
+    await s3Client.send(new HeadObjectCommand({ Bucket: BUCKET_NAME, Key: key }));
+    return true;
+  } catch (error: any) {
+    if (error?.name === 'NotFound' || error?.$metadata?.httpStatusCode === 404) {
+      return false;
+    }
+    throw error;
+  }
+};
+
+const findOriginalSourceKeyFromHlsKey = async (hlsKey: string) => {
+  if (!/\.m3u8$/i.test(hlsKey) || !hlsKey.startsWith('hls/')) {
+    return null;
+  }
+
+  const baseName = hlsKey
+    .replace(/^hls\//, '')
+    .replace(/\/[^/]+\.m3u8$/i, '');
+
+  if (!baseName) return null;
+
+  const originalPrefix = `user-uploads/${baseName}`;
+
+  for (const extension of VIDEO_SOURCE_EXTENSIONS) {
+    const candidate = `${originalPrefix}${extension}`;
+    if (await objectExists(candidate)) {
+      return candidate;
+    }
+  }
+
+  const listed = await s3Client.send(
+    new ListObjectsV2Command({
+      Bucket: BUCKET_NAME,
+      Prefix: originalPrefix,
+      MaxKeys: 20,
+    })
+  );
+
+  const match = (listed.Contents || [])
+    .map((item) => item.Key || '')
+    .find((key) => VIDEO_SOURCE_EXTENSIONS.some((extension) => key.toLowerCase().endsWith(extension)));
+
+  return match || null;
+};
+
 router.post('/download-url', jwtAuthMiddleware, async (req: Request, res: Response) => {
   try {
     const userId = req.user?.userId;
@@ -58,16 +126,39 @@ router.post('/download-url', jwtAuthMiddleware, async (req: Request, res: Respon
       return res.status(400).json({ success: false, message: 'Invalid media URL' });
     }
 
-    const downloadUrl = await getSignedUrl(
-      s3Client,
-      new GetObjectCommand({
-        Bucket: BUCKET_NAME,
-        Key: key,
-      }),
-      { expiresIn: 900 }
-    );
+    let resolvedKey = key;
+    let strategy = 'direct-object';
 
-    return res.json({ success: true, key, downloadUrl });
+    if (/\.m3u8$/i.test(key)) {
+      const mp4Key = key.replace(/\/[^/]+\.m3u8$/i, '/download.mp4');
+
+      if (await objectExists(mp4Key)) {
+        resolvedKey = mp4Key;
+        strategy = 'processed-mp4';
+      } else {
+        const originalKey = await findOriginalSourceKeyFromHlsKey(key);
+        if (!originalKey) {
+          return res.status(404).json({
+            success: false,
+            message: 'No downloadable video found for this media',
+            details: { hlsKey: key, attemptedMp4Key: mp4Key },
+          });
+        }
+
+        resolvedKey = originalKey;
+        strategy = 'original-source-fallback';
+      }
+    } else if (!(await objectExists(resolvedKey))) {
+      return res.status(404).json({
+        success: false,
+        message: 'Media file not found',
+        details: { key: resolvedKey },
+      });
+    }
+
+    const downloadUrl = toPublicViewUrl(req, resolvedKey);
+
+    return res.json({ success: true, key: resolvedKey, downloadUrl, strategy });
   } catch (error) {
     logger.error('Legacy media download URL error', { error });
     if (error instanceof AppError) {
