@@ -314,7 +314,7 @@ router.get('/:postId', async (req: Request, res: Response): Promise<Response | v
                   },
                 },
               },
-              orderBy: { createdAt: 'desc' },
+              orderBy: { createdAt: 'asc' },
               take: 2,
             }
           : undefined,
