@@ -806,26 +806,32 @@ router.get('/flutterwave/callback', async (req: Request, res: Response): Promise
       return;
     }
 
-    const finalized =
-      payment.paymentType === 'ROLLEY_STAKE'
-        ? await finalizeFlutterwaveRolleyPayment({
-            payment,
-            transactionId: transactionId || undefined,
+    // Return control to the app immediately. Flutterwave keeps the user on a
+    // "please wait" screen until this callback responds, so avoid synchronous
+    // verification/finalization work here. The mobile app and webhook will
+    // complete verification after the redirect.
+    await prisma.payment.update({
+      where: { id: payment.id },
+      data: {
+        metadata: {
+          ...(payment.metadata as any),
+          flutterwaveCallback: {
+            status,
             txRef,
-          })
-        : await finalizeFlutterwaveVotePayment({
-            payment,
-            transactionId: transactionId || undefined,
-            txRef,
-          });
+            transactionId: transactionId || null,
+            receivedAt: new Date().toISOString(),
+          },
+        },
+      },
+    });
 
     res.redirect(
       302,
       appendQueryParams(appRedirect, {
-        status: 'completed',
+        status: payment.status === 'COMPLETED' ? 'completed' : 'processing',
         tx_ref: txRef,
-        paymentId: finalized.payment.id,
-        transaction_id: finalized.transactionId,
+        paymentId: payment.id,
+        transaction_id: transactionId,
       })
     );
   } catch (error) {
