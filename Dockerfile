@@ -23,11 +23,9 @@ FROM node:20-alpine
 
 WORKDIR /app
 
-# Work around TLS issues in some build environments by using http alpine mirrors
-RUN sed -i 's/https:/http:/g' /etc/apk/repositories
-
-# Install netcat for database readiness check and OpenSSL for Prisma (Alpine/OpenSSL 3)
-RUN apk add --no-cache bash netcat-openbsd openssl libssl3
+# Install netcat for database readiness check and OpenSSL for Prisma (Alpine/OpenSSL 3).
+# Retry because transient mirror resets occasionally break Coolify builds.
+RUN for i in 1 2 3; do apk add --no-cache bash netcat-openbsd openssl libssl3 && exit 0; sleep 5; done; exit 1
 
 # Copy package files
 COPY package*.json ./
