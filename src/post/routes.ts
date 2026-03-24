@@ -1,97 +1,17 @@
 import { Router, Request, Response } from 'express';
 import { prisma } from '../index';
-import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3';
 import { logger } from '../utils/logger';
 import { AppError } from '../utils/errorHandler';
 import { addPostExpirationJob } from '../queue/postQueue';
 import { jwtAuthMiddleware } from '../auth/jwtMiddleware';
+import { hardDeletePost } from './service';
 
 const router = Router();
-
-const s3Client = new S3Client({
-  region: process.env.AWS_REGION || 'eu-north-1',
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-  },
-  requestChecksumCalculation: 'NEVER' as any,
-} as any);
-
-const BUCKET_NAME = process.env.S3_BUCKET_NAME || process.env.AWS_S3_BUCKET_NAME || '';
 
 type NormalizedMediaItem = {
   url: string;
   type: 'image' | 'video';
 };
-
-function extractKeyFromUrl(url?: string | null): string | null {
-  if (!url) return null;
-  try {
-    const parsed = new URL(url);
-    return parsed.pathname.replace(/^\/+/, '');
-  } catch {
-    return null;
-  }
-}
-
-function getBaseNameFromHlsPath(path: string): string | null {
-  if (!path.startsWith('hls/')) return null;
-  const trimmed = path.slice('hls/'.length);
-  const lastSlash = trimmed.lastIndexOf('/');
-  if (lastSlash <= 0) return null;
-  return trimmed.slice(0, lastSlash);
-}
-
-async function deletePrefix(prefix: string) {
-  if (!BUCKET_NAME) {
-    throw new AppError('S3 bucket not configured', 500);
-  }
-  let continuationToken: string | undefined;
-  do {
-    const list = await s3Client.send(
-      new ListObjectsV2Command({
-        Bucket: BUCKET_NAME,
-        Prefix: prefix,
-        ContinuationToken: continuationToken,
-      })
-    );
-    const objects = (list.Contents || [])
-      .map((obj) => obj.Key)
-      .filter((key): key is string => !!key)
-      .map((Key) => ({ Key }));
-    if (objects.length) {
-      await s3Client.send(
-        new DeleteObjectsCommand({
-          Bucket: BUCKET_NAME,
-          Delete: { Objects: objects },
-        })
-      );
-    }
-    continuationToken = list.IsTruncated ? list.NextContinuationToken : undefined;
-  } while (continuationToken);
-}
-
-async function deletePostMedia(mediaUrl?: string | null) {
-  if (!mediaUrl) return;
-  const keyPath = extractKeyFromUrl(mediaUrl);
-  if (!keyPath) return;
-
-  if (keyPath.startsWith('user-uploads/')) {
-    const baseName = keyPath
-      .replace(/^user-uploads\//, '')
-      .replace(/\.[^.]+$/, '');
-    await deletePrefix(`user-uploads/${baseName}`);
-    await deletePrefix(`hls/${baseName}/`);
-    return;
-  }
-
-  if (keyPath.startsWith('hls/')) {
-    const baseName = getBaseNameFromHlsPath(keyPath);
-    if (!baseName) return;
-    await deletePrefix(`hls/${baseName}/`);
-    await deletePrefix(`user-uploads/${baseName}`);
-  }
-}
 
 function normalizeMediaTypeValue(value?: string | null): 'image' | 'video' | null {
   if (!value) return null;
@@ -143,26 +63,6 @@ function getSerializableMediaItems(
   fallbackMediaType?: string | null
 ): NormalizedMediaItem[] {
   return normalizeMediaItems(mediaItemsInput, fallbackMediaUrl, fallbackMediaType);
-}
-
-async function deletePostMediaCollection(input: {
-  mediaUrl?: string | null;
-  mediaItems?: unknown;
-}) {
-  const targets = new Set<string>();
-  for (const item of getSerializableMediaItems(
-    input.mediaItems,
-    input.mediaUrl,
-    null
-  )) {
-    if (item.url) targets.add(item.url);
-  }
-  if (input.mediaUrl) {
-    targets.add(input.mediaUrl);
-  }
-  for (const url of targets) {
-    await deletePostMedia(url);
-  }
 }
 
 /**
@@ -792,48 +692,11 @@ router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => 
     }
 
     if (post.status !== 'ACTIVE') {
-      await deletePostMediaCollection({
-        mediaUrl: post.mediaUrl,
-        mediaItems: post.mediaItems,
-      });
-      await prisma.$transaction(async (tx) => {
-        await tx.comment.deleteMany({ where: { postId } });
-        await tx.reaction.deleteMany({ where: { postId } });
-        await tx.vote.deleteMany({ where: { postId } });
-        await tx.postTag.deleteMany({ where: { postId } });
-        await tx.post.delete({ where: { id: postId } });
-      });
+      await hardDeletePost(postId);
       return res.json({ success: true });
     }
 
-    await deletePostMediaCollection({
-      mediaUrl: post.mediaUrl,
-      mediaItems: post.mediaItems,
-    });
-
-    const updated = await prisma.$transaction(async (tx) => {
-      await tx.comment.deleteMany({ where: { postId } });
-      await tx.reaction.deleteMany({ where: { postId } });
-      await tx.vote.deleteMany({ where: { postId } });
-      await tx.postTag.deleteMany({ where: { postId } });
-
-      const deleted = await tx.post.delete({
-        where: { id: postId },
-      });
-
-      let repostCount: number | null = null;
-      if (deleted.repostOfId) {
-        const original = await tx.post.update({
-          where: { id: deleted.repostOfId },
-          data: {
-            repostCount: { decrement: 1 },
-          },
-        });
-        repostCount = original.repostCount;
-      }
-
-      return { deleted, repostCount };
-    });
+    const updated = await hardDeletePost(postId);
 
     try {
       const { getIO } = await import('../websocket/socket');

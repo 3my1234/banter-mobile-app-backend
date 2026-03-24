@@ -6,10 +6,22 @@ import {
   disablePostExpirationQueue,
   getPostExpirationQueue,
 } from './postQueue';
+import { addPostExpirationJob } from './postQueue';
 import { getRedisConfig } from './redisConfig';
 import { getIO } from '../websocket/socket';
+import { createNotification } from '../notification/service';
+import { hardDeletePost } from '../post/service';
 
 const redisConfig = getRedisConfig();
+const ROAST_SURVIVAL_REWARD_RAW = (() => {
+  try {
+    return BigInt(process.env.BANTER_ROAST_SURVIVAL_ROL_RAW || '100000');
+  } catch {
+    return BigInt(100000);
+  }
+})();
+const ROAST_SURVIVAL_CYCLE_HOURS = 24;
+const ROAST_REWARD_EVERY_CYCLES = 7;
 
 let postExpirationWorker: Worker | null = null;
 
@@ -115,33 +127,79 @@ export async function setupQueueWorkers(): Promise<void> {
         }
 
         if (post.dropVotes >= post.stayVotes) {
-          await prisma.post.update({
-            where: { id: postId },
-            data: {
-              status: 'HIDDEN',
-              hiddenAt: new Date(),
-            },
-          });
+          const deleted = await hardDeletePost(postId);
 
-          logger.info(`Post ${postId} hidden: Drop votes (${post.dropVotes}) >= Stay votes (${post.stayVotes})`);
+          logger.info(`Post ${postId} deleted: Drop votes (${post.dropVotes}) >= Stay votes (${post.stayVotes})`);
 
           try {
             getIO().emit('post-hidden', {
               postId,
-              reason: 'drop_votes_exceeded',
+              reason: 'drop_votes_deleted',
               stayVotes: post.stayVotes,
               dropVotes: post.dropVotes,
             });
+            if (deleted.repostOfId && typeof deleted.repostCount === 'number') {
+              getIO().emit('repost-update', {
+                postId: deleted.repostOfId,
+                repostCount: deleted.repostCount,
+              });
+            }
           } catch (error) {
             logger.warn('WebSocket not available for post-hidden event', { error });
           }
         } else {
-          await prisma.post.update({
-            where: { id: postId },
+          const nextSurvivalCycles = post.survivalCycles + 1;
+          const nextRewardCyclesPaid = Math.floor(nextSurvivalCycles / ROAST_REWARD_EVERY_CYCLES);
+          const rewardMilestonesEarned = Math.max(nextRewardCyclesPaid - post.rewardCyclesPaid, 0);
+          const nextExpiresAt = new Date(post.expiresAt.getTime() + ROAST_SURVIVAL_CYCLE_HOURS * 60 * 60 * 1000);
+
+          const updateResult = await prisma.post.updateMany({
+            where: {
+              id: postId,
+              expiresAt: post.expiresAt,
+              survivalCycles: post.survivalCycles,
+              rewardCyclesPaid: post.rewardCyclesPaid,
+            },
             data: {
               status: 'ACTIVE',
+              hiddenAt: null,
+              expiresAt: nextExpiresAt,
+              survivalCycles: { increment: 1 },
+              rewardCyclesPaid: nextRewardCyclesPaid,
             },
           });
+
+          if (updateResult.count === 0) {
+            logger.warn(`Post ${postId} survival update was skipped because the post changed concurrently`);
+            return;
+          }
+
+          if (rewardMilestonesEarned > 0) {
+            const rewardRaw = ROAST_SURVIVAL_REWARD_RAW * BigInt(rewardMilestonesEarned);
+            await prisma.user.update({
+              where: { id: post.userId },
+              data: {
+                rolBalanceRaw: { increment: rewardRaw },
+              },
+            });
+
+            const rewardDisplay = Number(rewardRaw) / 10 ** 8;
+            await createNotification({
+              userId: post.userId,
+              type: 'SYSTEM',
+              title: 'Banter survival reward',
+              body: `Your banter post survived ${nextRewardCyclesPaid * ROAST_REWARD_EVERY_CYCLES} days and earned ${rewardDisplay.toFixed(3)} ROL.`,
+              data: {
+                postId,
+                rewardRaw: rewardRaw.toString(),
+                rewardCyclesPaid: nextRewardCyclesPaid,
+                survivalCycles: nextSurvivalCycles,
+              },
+              reference: `banter_survival_reward:${postId}:${nextRewardCyclesPaid}`,
+            });
+          }
+
+          await addPostExpirationJob(postId, nextExpiresAt);
 
           logger.info(`Post ${postId} stays active: Stay votes (${post.stayVotes}) > Drop votes (${post.dropVotes})`);
 
@@ -151,6 +209,9 @@ export async function setupQueueWorkers(): Promise<void> {
               reason: 'stay_votes_exceeded',
               stayVotes: post.stayVotes,
               dropVotes: post.dropVotes,
+              survivalCycles: nextSurvivalCycles,
+              rewardCyclesPaid: nextRewardCyclesPaid,
+              nextExpiresAt: nextExpiresAt.toISOString(),
             });
           } catch (error) {
             logger.warn('WebSocket not available for post-stays event', { error });

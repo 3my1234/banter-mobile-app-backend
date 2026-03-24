@@ -124,6 +124,8 @@ model Post {
   status          PostStatus @default(ACTIVE)
   expiresAt       DateTime   // 24 hours from creation
   hiddenAt        DateTime?  // When post was hidden (dropped)
+  survivalCycles  Int        @default(0)
+  rewardCyclesPaid Int       @default(0)
   
   // Relations
   votes           Vote[]
