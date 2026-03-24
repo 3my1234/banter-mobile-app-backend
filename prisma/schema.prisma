@@ -141,6 +141,7 @@ model Post {
   @@index([expiresAt])
   @@index([league])
   @@index([isRoast])
+  @@index([isRoast, status, expiresAt, createdAt])
   @@index([repostOfId])
   @@unique([userId, repostOfId])
 }
