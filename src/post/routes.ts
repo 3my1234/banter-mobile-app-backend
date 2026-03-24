@@ -69,7 +69,7 @@ function getSerializableMediaItems(
  * POST /api/posts
  * Create a new post
  */
-router.post('/', async (req: Request, res: Response) => {
+router.post('/', async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
@@ -213,9 +213,9 @@ router.post('/', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Create post error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to create post', 500);
+    return res.status(500).json({ success: false, message: 'Failed to create post' });
   }
 });
 
@@ -224,7 +224,7 @@ router.post('/', async (req: Request, res: Response) => {
  * Get posts with feed filtering (forYou, following, hot)
  * Query params: feed=forYou|following|hot, page, limit
  */
-router.get('/', async (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const userId = req.user?.userId;
     const feed = (req.query.feed as string) || 'forYou';
@@ -412,9 +412,9 @@ router.get('/', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Get posts error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to get posts', 500);
+    return res.status(500).json({ success: false, message: 'Failed to get posts' });
   }
 });
 
@@ -422,7 +422,7 @@ router.get('/', async (req: Request, res: Response) => {
  * GET /api/posts/:id
  * Get a specific post
  */
-router.get('/:id', async (req: Request, res: Response) => {
+router.get('/:id', async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const postId = req.params.id;
     const userId = req.user?.userId;
@@ -544,9 +544,9 @@ router.get('/:id', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Get post error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to get post', 500);
+    return res.status(500).json({ success: false, message: 'Failed to get post' });
   }
 });
 
@@ -554,7 +554,7 @@ router.get('/:id', async (req: Request, res: Response) => {
  * PATCH /api/posts/:id
  * Edit a post (content only)
  */
-router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
+router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
@@ -657,9 +657,9 @@ router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Edit post error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to edit post', 500);
+    return res.status(500).json({ success: false, message: 'Failed to edit post' });
   }
 });
 
@@ -667,7 +667,7 @@ router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
  * DELETE /api/posts/:id
  * Hide (delete) a post
  */
-router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => {
+router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
@@ -712,9 +712,9 @@ router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => 
   } catch (error) {
     logger.error('Delete post error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to delete post', 500);
+    return res.status(500).json({ success: false, message: 'Failed to delete post' });
   }
 });
 
@@ -722,7 +722,7 @@ router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response) => 
  * POST /api/posts/:id/share
  * Increment share count for a post
  */
-router.post('/:id/share', async (req: Request, res: Response) => {
+router.post('/:id/share', async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const postId = req.params.id;
 
@@ -758,9 +758,9 @@ router.post('/:id/share', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Share post error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to share post', 500);
+    return res.status(500).json({ success: false, message: 'Failed to share post' });
   }
 });
 
@@ -768,7 +768,7 @@ router.post('/:id/share', async (req: Request, res: Response) => {
  * POST /api/posts/:id/repost
  * Create a repost/rebanter for the current user
  */
-router.post('/:id/repost', jwtAuthMiddleware, async (req: Request, res: Response) => {
+router.post('/:id/repost', jwtAuthMiddleware, async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const userId = req.user?.userId;
     if (!userId) {
@@ -859,9 +859,9 @@ router.post('/:id/repost', jwtAuthMiddleware, async (req: Request, res: Response
   } catch (error) {
     logger.error('Repost error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({ success: false, message: error.message });
     }
-    throw new AppError('Failed to repost', 500);
+    return res.status(500).json({ success: false, message: 'Failed to repost' });
   }
 });
 
