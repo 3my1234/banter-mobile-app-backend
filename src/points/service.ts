@@ -46,6 +46,20 @@ const awardPointsOnce = async (
     metadata?: Prisma.InputJsonValue;
   }
 ): Promise<AwardResult> => {
+  const existing = await tx.pointLedger.findUnique({
+    where: { reference: input.reference },
+    select: { id: true },
+  });
+
+  if (existing) {
+    return {
+      awarded: false,
+      reference: input.reference,
+      pointsRaw: input.pointsRaw,
+      reason: 'ALREADY_AWARDED',
+    };
+  }
+
   try {
     await tx.pointLedger.create({
       data: {
