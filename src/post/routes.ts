@@ -291,18 +291,6 @@ router.get('/', async (req: Request, res: Response) => {
             avatarUrl: true,
           },
         },
-        votes: {
-          select: {
-            id: true,
-            userId: true,
-            voteType: true,
-          },
-        },
-        postTags: {
-          include: {
-            tag: true,
-          },
-        },
         _count: {
           select: {
             comments: true,
@@ -337,6 +325,17 @@ router.get('/', async (req: Request, res: Response) => {
     });
 
     const postIds = posts.map((p) => p.id);
+    const userVotes = userId && postIds.length
+      ? await prisma.vote.findMany({
+          where: { postId: { in: postIds }, userId },
+          select: { postId: true, voteType: true },
+        })
+      : [];
+    const userVoteMap = userVotes.reduce<Record<string, string>>((acc, vote) => {
+      acc[vote.postId] = vote.voteType;
+      return acc;
+    }, {});
+
     const reactionGroups = postIds.length
       ? await prisma.reaction.groupBy({
           by: ['postId', 'type'],
@@ -373,10 +372,6 @@ router.get('/', async (req: Request, res: Response) => {
     res.json({
       success: true,
       posts: posts.map((post) => {
-        const userVote = userId
-          ? post.votes.find((v) => v.userId === userId)
-          : null;
-
         return {
           id: post.id,
           content: post.content,
@@ -395,7 +390,7 @@ router.get('/', async (req: Request, res: Response) => {
           createdAt: post.createdAt,
           ownedByViewer: post.userId === userId,
           user: post.user,
-          userVote: userVote ? userVote.voteType : null,
+          userVote: userVoteMap[post.id] || null,
           commentCount: post._count.comments,
           reactionCount: post._count.reactions,
           reactionBreakdown: reactionMap[post.id] || {},
