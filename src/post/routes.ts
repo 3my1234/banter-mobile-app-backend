@@ -241,16 +241,10 @@ router.get('/', async (req: Request, res: Response) => {
       whereClause.isRoast = false;
     } else if (type === 'banter') {
       whereClause.isRoast = true;
-      whereClause.expiresAt = { gt: new Date() };
     } else {
       whereClause.OR = [
         { isRoast: false },
-        {
-          isRoast: true,
-          expiresAt: {
-            gt: new Date(), // Only show roasts that haven't expired
-          },
-        },
+        { isRoast: true },
       ];
     }
 
