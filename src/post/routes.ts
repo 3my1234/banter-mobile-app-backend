@@ -78,11 +78,11 @@ router.post('/', async (req: Request, res: Response): Promise<Response | void> =
 
     const { content, mediaUrl, mediaType, mediaItems, isRoast, tags, league } = req.body;
 
-    if (!content || content.trim().length === 0) {
-      throw new AppError('Post content is required', 400);
-    }
-
     const normalizedMediaItems = normalizeMediaItems(mediaItems, mediaUrl, mediaType);
+    const trimmedContent = typeof content === 'string' ? content.trim() : '';
+    if (!trimmedContent && normalizedMediaItems.length === 0) {
+      throw new AppError('Post content or media is required', 400);
+    }
     if (normalizedMediaItems.length > 6) {
       throw new AppError('You can upload up to 6 images per post', 400);
     }
@@ -145,10 +145,12 @@ router.post('/', async (req: Request, res: Response): Promise<Response | void> =
       }
     }
 
+    const normalizedContent = trimmedContent || (isRoast === true ? '[ROAST]' : '');
+
     const post = await prisma.post.create({
       data: {
         userId: user.id,
-        content: content.trim(),
+        content: normalizedContent,
         mediaUrl: primaryMedia?.url || null,
         mediaType: primaryMedia?.type || null,
         mediaItems: normalizedMediaItems.length ? (normalizedMediaItems as any) : null,
