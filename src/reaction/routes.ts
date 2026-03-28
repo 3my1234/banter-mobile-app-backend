@@ -8,6 +8,20 @@ const router = Router();
 
 const VALID_REACTION_TYPES = ['LIKE', 'LOVE', 'LAUGH', 'FIRE', 'ANGRY', 'SAD'];
 
+async function getReactionMetrics(postId: string) {
+  const reactionCount = await prisma.reaction.count({ where: { postId } });
+  const grouped = await prisma.reaction.groupBy({
+    by: ['type'],
+    where: { postId },
+    _count: { type: true },
+  });
+  const reactionBreakdown = grouped.reduce<Record<string, number>>((acc, row) => {
+    acc[row.type] = row._count.type;
+    return acc;
+  }, {});
+  return { reactionCount, reactionBreakdown };
+}
+
 /**
  * POST /api/reactions
  * Add or update a reaction on a post
@@ -65,16 +79,23 @@ router.post('/', async (req: Request, res: Response) => {
     if (existingReaction) {
       if (existingReaction.type === type) {
         // Same reaction, remove it (toggle off)
-        await prisma.reaction.delete({
-          where: { id: existingReaction.id },
-        });
+        try {
+          await prisma.reaction.delete({
+            where: { id: existingReaction.id },
+          });
+        } catch (error: any) {
+          if (error?.code !== 'P2025') {
+            throw error;
+          }
+        }
         logger.info(`Removed reaction ${type} on post ${postId} by user ${user.id}`);
         action = 'removed';
-        const reactionCount = await prisma.reaction.count({ where: { postId } });
+        const { reactionCount, reactionBreakdown } = await getReactionMetrics(postId);
         try {
           getIO().emit('reaction-update', {
             postId,
             reactionCount,
+            reactionBreakdown,
             action,
             type,
             userId: user.id,
@@ -87,6 +108,7 @@ router.post('/', async (req: Request, res: Response) => {
           reaction: null,
           message: 'Reaction removed',
           reactionCount,
+          reactionBreakdown,
         });
       } else {
         // Update reaction type
@@ -130,19 +152,7 @@ router.post('/', async (req: Request, res: Response) => {
       action = 'created';
     }
 
-    const reactionCount = await prisma.reaction.count({ where: { postId } });
-    const grouped = await prisma.reaction.groupBy({
-      by: ['type'],
-      where: { postId },
-      _count: { type: true },
-    });
-    const reactionBreakdown = grouped.reduce<Record<string, number>>(
-      (acc, row) => {
-        acc[row.type] = row._count.type;
-        return acc;
-      },
-      {}
-    );
+    const { reactionCount, reactionBreakdown } = await getReactionMetrics(postId);
     try {
       getIO().emit('reaction-update', {
         postId,
@@ -172,9 +182,58 @@ router.post('/', async (req: Request, res: Response) => {
   } catch (error) {
     logger.error('Reaction error', { error });
     if (error instanceof AppError) {
-      throw error;
+      return res.status(error.statusCode).json({
+        success: false,
+        message: error.message,
+      });
     }
-    throw new AppError('Failed to create reaction', 500);
+    const postId = typeof req.body?.postId === 'string' ? req.body.postId : null;
+    const userId = req.user?.userId;
+
+    if ((error as any)?.code === 'P2002' && postId && userId) {
+      const existingReaction = await prisma.reaction.findUnique({
+        where: {
+          postId_userId: {
+            postId,
+            userId,
+          },
+        },
+        include: {
+          user: {
+            select: {
+              id: true,
+              displayName: true,
+              username: true,
+              avatarUrl: true,
+            },
+          },
+        },
+      });
+      const { reactionCount, reactionBreakdown } = await getReactionMetrics(postId);
+      return res.status(200).json({
+        success: true,
+        reaction: existingReaction,
+        reactionCount,
+        reactionBreakdown,
+        message: 'Reaction already processed',
+      });
+    }
+
+    if ((error as any)?.code === 'P2025' && postId) {
+      const { reactionCount, reactionBreakdown } = await getReactionMetrics(postId);
+      return res.status(200).json({
+        success: true,
+        reaction: null,
+        reactionCount,
+        reactionBreakdown,
+        message: 'Reaction already processed',
+      });
+    }
+
+    return res.status(500).json({
+      success: false,
+      message: 'Failed to create reaction',
+    });
   }
 });
 
