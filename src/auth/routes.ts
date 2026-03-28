@@ -578,13 +578,7 @@ router.get('/me', jwtAuthMiddleware, async (req: Request, res: Response): Promis
     const user = await prisma.user.findUnique({
       where: { id: userId },
       include: {
-        wallets: {
-          include: {
-            walletBalances: {
-              orderBy: { lastUpdated: 'desc' },
-            },
-          },
-        },
+        wallets: true,
       },
     });
 
