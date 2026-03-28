@@ -9,6 +9,7 @@ import { logger } from './utils/logger';
 import { errorHandler } from './utils/errorHandler';
 import { jwtAuthMiddleware } from './auth/jwtMiddleware';
 import { setupWebSocket } from './websocket/socket';
+import { closeSocketRedisAdapter, setupSocketRedisAdapter } from './websocket/redisAdapter';
 import { setupQueueWorkers } from './queue/workers';
 import authRoutes from './auth/routes';
 import walletRoutes from './wallet/routes';
@@ -126,25 +127,41 @@ app.use('/api/admin', adminRoutes);
 // Error handling
 app.use(errorHandler);
 
-// Setup WebSocket
-setupWebSocket(io);
+function shouldRunQueueWorkers() {
+  return process.env.RUN_QUEUE_WORKERS !== '0' && process.env.DISABLE_BACKGROUND_QUEUE !== '1';
+}
 
-// Setup Queue Workers
-void setupQueueWorkers();
+async function bootstrap() {
+  await setupSocketRedisAdapter(io);
+  setupWebSocket(io);
 
-// Start server
-const PORT = process.env.PORT || 3001;
+  if (shouldRunQueueWorkers()) {
+    await setupQueueWorkers();
+  } else {
+    logger.info('Queue workers disabled via RUN_QUEUE_WORKERS=0 or DISABLE_BACKGROUND_QUEUE=1');
+  }
 
-httpServer.listen(PORT, () => {
-  logger.info(`🚀 Banter Backend Server running on port ${PORT}`);
-  logger.info(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
-  logger.info(`🌐 Domain: ${process.env.DOMAIN || 'localhost'}`);
-  logger.info(`🔗 API URL: ${process.env.API_URL || `http://localhost:${PORT}`}`);
+  const PORT = process.env.PORT || 3001;
+  httpServer.listen(PORT, () => {
+    logger.info(`🚀 Banter Backend Server running on port ${PORT}`);
+    logger.info(`📡 Environment: ${process.env.NODE_ENV || 'development'}`);
+    logger.info(`🌐 Domain: ${process.env.DOMAIN || 'localhost'}`);
+    logger.info(`🔗 API URL: ${process.env.API_URL || `http://localhost:${PORT}`}`);
+    logger.info(`🧵 Queue workers: ${shouldRunQueueWorkers() ? 'enabled' : 'disabled'}`);
+  });
+}
+
+void bootstrap().catch(async (error) => {
+  logger.error('Failed to bootstrap backend', { error });
+  await closeSocketRedisAdapter().catch(() => undefined);
+  await prisma.$disconnect().catch(() => undefined);
+  process.exit(1);
 });
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
   logger.info('SIGTERM received, shutting down gracefully...');
+  await closeSocketRedisAdapter().catch(() => undefined);
   await prisma.$disconnect();
   httpServer.close(() => {
     logger.info('Server closed');
@@ -154,6 +171,7 @@ process.on('SIGTERM', async () => {
 
 process.on('SIGINT', async () => {
   logger.info('SIGINT received, shutting down gracefully...');
+  await closeSocketRedisAdapter().catch(() => undefined);
   await prisma.$disconnect();
   httpServer.close(() => {
     logger.info('Server closed');
