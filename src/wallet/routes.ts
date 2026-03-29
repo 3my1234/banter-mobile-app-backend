@@ -518,7 +518,11 @@ const getWalletBalancesPayload = async (
     'USDC.E': { balance: '0', balanceUsd: null, decimals: 6 },
   };
 
-  for (const wallet of user.wallets) {
+  const activeWallets =
+    user.wallets.filter((wallet) => wallet.isPrimary) || [];
+  const walletSet = activeWallets.length > 0 ? activeWallets : user.wallets;
+
+  for (const wallet of walletSet) {
     for (const balance of wallet.walletBalances) {
       const symbol = balance.tokenSymbol.toUpperCase();
       if (symbol === 'ROL' || symbol === 'SOL' || symbol === 'USDC' || symbol === 'USDC.E') {
@@ -545,7 +549,7 @@ const getWalletBalancesPayload = async (
     usdcBalanceData &&
     (!usdcBalanceData.balance || usdcBalanceData.balance === '0')
   ) {
-    const movementWallets = user.wallets.filter((w) => w.blockchain === 'MOVEMENT');
+    const movementWallets = walletSet.filter((w) => w.blockchain === 'MOVEMENT');
     if (movementWallets.length) {
       const indexerBalance = await fetchMovementUSDCBalance(movementWallets[0].address);
       if (indexerBalance && indexerBalance.balance !== '0') {
@@ -561,7 +565,7 @@ const getWalletBalancesPayload = async (
   return {
     user,
     balances,
-    wallets: user.wallets.map((w: typeof user.wallets[0]) => ({
+    wallets: walletSet.map((w: typeof user.wallets[0]) => ({
       id: w.id,
       address: w.address,
       blockchain: w.blockchain,

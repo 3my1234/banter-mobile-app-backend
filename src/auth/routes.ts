@@ -119,6 +119,66 @@ const pickPrimaryWalletsByChain = (
   };
 };
 
+const reconcilePrimaryWalletForChain = async (
+  tx: Prisma.TransactionClient,
+  params: {
+    userId: string;
+    blockchain: 'MOVEMENT' | 'SOLANA';
+    wallet:
+      | {
+          address: string;
+          type: string;
+          walletClient: string;
+        }
+      | null
+      | undefined;
+  }
+) => {
+  const { userId, blockchain, wallet } = params;
+
+  if (!wallet) {
+    await tx.wallet.updateMany({
+      where: { userId, blockchain },
+      data: { isPrimary: false },
+    });
+    return null;
+  }
+
+  const primary = await tx.wallet.upsert({
+    where: {
+      userId_blockchain_address: {
+        userId,
+        blockchain,
+        address: wallet.address,
+      },
+    },
+    update: {
+      type: wallet.type,
+      walletClient: wallet.walletClient,
+      isPrimary: true,
+    },
+    create: {
+      userId,
+      address: wallet.address,
+      blockchain,
+      type: wallet.type,
+      walletClient: wallet.walletClient,
+      isPrimary: true,
+    },
+  });
+
+  await tx.wallet.updateMany({
+    where: {
+      userId,
+      blockchain,
+      id: { not: primary.id },
+    },
+    data: { isPrimary: false },
+  });
+
+  return primary;
+};
+
 const resolvePrivyEmail = (privyUser: any, linkedAccounts: any[] = []) => {
   const directEmail = privyUser?.email?.address || privyUser?.email || '';
   if (typeof directEmail === 'string' && directEmail.includes('@')) {
@@ -198,40 +258,29 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
         },
       });
 
-      // Reconcile SOLANA wallet strictly to current Privy state (single wallet per chain).
-      if (solanaWallet) {
-        // Delete first, then recreate to avoid unique conflicts from stale duplicates.
-        await tx.wallet.deleteMany({
-          where: { userId: syncedUser.id, blockchain: 'SOLANA' },
-        });
-        await tx.wallet.create({
-          data: {
-            userId: syncedUser.id,
-            address: solanaWallet.address,
-            blockchain: 'SOLANA',
-            type: solanaWallet.type,
-            walletClient: solanaWallet.walletClient,
-            isPrimary: false,
-          },
-        });
-      }
-
-      // Reconcile MOVEMENT wallet strictly to current Privy state (single wallet per chain).
-      await tx.wallet.deleteMany({
-        where: { userId: syncedUser.id, blockchain: 'MOVEMENT' },
+      await reconcilePrimaryWalletForChain(tx, {
+        userId: syncedUser.id,
+        blockchain: 'SOLANA',
+        wallet: solanaWallet
+          ? {
+              address: solanaWallet.address,
+              type: solanaWallet.type,
+              walletClient: solanaWallet.walletClient,
+            }
+          : null,
       });
-      if (movementWallet) {
-        await tx.wallet.create({
-          data: {
-            userId: syncedUser.id,
-            address: movementWallet.address,
-            blockchain: 'MOVEMENT',
-            type: movementWallet.type,
-            walletClient: movementWallet.walletClient,
-            isPrimary: false,
-          },
-        });
-      }
+
+      await reconcilePrimaryWalletForChain(tx, {
+        userId: syncedUser.id,
+        blockchain: 'MOVEMENT',
+        wallet: movementWallet
+          ? {
+              address: movementWallet.address,
+              type: movementWallet.type,
+              walletClient: movementWallet.walletClient,
+            }
+          : null,
+      });
 
       const rewardResult = await awardDailyLoginPoints(tx, syncedUser.id, now);
       dailyPointsAwarded = rewardResult.awarded;
