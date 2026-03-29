@@ -118,13 +118,23 @@ export const normalizeNotificationForClient = (notification: NotificationRecord)
 };
 
 export async function createNotification(input: CreateNotificationInput) {
-  try {
-    const resolvedBody = resolveNotificationMessage({
-      type: input.type,
-      title: input.title,
-      body: input.body,
-      data: input.data,
+  const resolvedBody = resolveNotificationMessage({
+    type: input.type,
+    title: input.title,
+    body: input.body,
+    data: input.data,
+  });
+
+  if (input.reference) {
+    const existing = await prisma.notification.findUnique({
+      where: { reference: input.reference },
     });
+    if (existing) {
+      return existing;
+    }
+  }
+
+  try {
     const created = await prisma.notification.create({
       data: {
         userId: input.userId,
@@ -138,7 +148,6 @@ export async function createNotification(input: CreateNotificationInput) {
     emitNotificationCreated(created);
     return created;
   } catch (error: any) {
-    // Idempotent duplicate guard (e.g., same daily reward reference).
     if (error?.code === 'P2002' && input.reference) {
       return prisma.notification.findUnique({
         where: { reference: input.reference },

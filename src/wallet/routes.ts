@@ -17,6 +17,10 @@ const MOVEMENT_NATIVE_TOKEN = '0x1::aptos_coin::AptosCoin';
 const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
 const SOLANA_USDC_MINT = process.env.SOLANA_USDC_MINT || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const SOLANA_TX_HISTORY_LIMIT = Number.parseInt(process.env.SOLANA_TX_HISTORY_LIMIT || '50', 10);
+const WALLET_SYNC_TTL_MS = Number.parseInt(process.env.WALLET_SYNC_TTL_MS || '300000', 10);
+const INDEXER_FETCH_TTL_MS = Number.parseInt(process.env.WALLET_INDEXER_FETCH_TTL_MS || '300000', 10);
+const recentWalletSyncs = new Map<string, number>();
+const recentIndexerFetches = new Map<string, number>();
 const toRawBigInt = (value: string | null | undefined) => {
   try {
     return BigInt(value || '0');
@@ -32,6 +36,11 @@ const formatAmount = (raw: string, decimals: number) => {
     minimumFractionDigits: 0,
     maximumFractionDigits: Math.min(decimals, 6),
   });
+};
+
+const isThrottleExpired = (cache: Map<string, number>, key: string, ttlMs: number) => {
+  const lastRunAt = cache.get(key) || 0;
+  return Date.now() - lastRunAt > ttlMs;
 };
 
 const notifyWalletTransaction = async (params: {
@@ -598,13 +607,35 @@ router.post('/sync/:walletId', async (req: Request, res: Response) => {
       throw new AppError('Wallet not found', 404);
     }
 
+    if (!isThrottleExpired(recentWalletSyncs, wallet.id, WALLET_SYNC_TTL_MS)) {
+      const cachedWallet = await prisma.wallet.findUnique({
+        where: { id: walletId },
+        include: {
+          walletBalances: true,
+        },
+      });
+      return res.json({
+        success: true,
+        wallet: cachedWallet,
+        skipped: true,
+      });
+    }
+
+    recentWalletSyncs.set(wallet.id, Date.now());
+
     // Sync balance based on blockchain
     if (wallet.blockchain === 'MOVEMENT') {
       await syncMovementBalance(wallet.id, wallet.address);
     } else if (wallet.blockchain === 'SOLANA') {
       await syncSolanaBalance(wallet.id, wallet.address);
-      const solanaActivities = await fetchSolanaUSDCHistory(wallet.address);
+      const shouldFetchSolanaHistory = isThrottleExpired(
+        recentIndexerFetches,
+        wallet.address,
+        INDEXER_FETCH_TTL_MS
+      );
+      const solanaActivities = shouldFetchSolanaHistory ? await fetchSolanaUSDCHistory(wallet.address) : [];
       if (solanaActivities.length > 0) {
+        recentIndexerFetches.set(wallet.address, Date.now());
         const solanaTxItems = solanaActivities.map((activity) => ({
           id: `sol-${activity.txHash}`,
           walletId: wallet.id,
@@ -671,7 +702,7 @@ router.get('/transactions', async (req: Request, res: Response) => {
     }
 
     const includeIndexer = req.query.includeIndexer === '1';
-    const syncIndexer = req.query.sync === '1' || includeIndexer;
+    const syncIndexer = req.query.sync === '1';
 
     const [transactions, total] = await Promise.all([
       prisma.walletTransaction.findMany({
@@ -698,7 +729,7 @@ router.get('/transactions', async (req: Request, res: Response) => {
     ]);
 
     let indexerTransactions: any[] = [];
-    if (includeIndexer) {
+    if (includeIndexer && syncIndexer) {
       const movementWallets = await prisma.wallet.findMany({
         where: { userId, blockchain: 'MOVEMENT' },
       });
@@ -707,6 +738,13 @@ router.get('/transactions', async (req: Request, res: Response) => {
       });
 
       for (const wallet of movementWallets) {
+        const shouldFetchIndexer = isThrottleExpired(
+          recentIndexerFetches,
+          wallet.address,
+          INDEXER_FETCH_TTL_MS
+        );
+        if (!shouldFetchIndexer) continue;
+
         const activities = await fetchMovementUSDCHistory(wallet.address);
         const moveActivities = await fetchMovementMoveHistory(wallet.address);
         const toIndexerRow = (activity: any, tokenAddress: string, tokenSymbol: string) => {
@@ -763,9 +801,17 @@ router.get('/transactions', async (req: Request, res: Response) => {
         }
 
         indexerTransactions = indexerTransactions.concat(Array.from(byHash.values()));
+        recentIndexerFetches.set(wallet.address, Date.now());
       }
 
       for (const wallet of solanaWallets) {
+        const shouldFetchIndexer = isThrottleExpired(
+          recentIndexerFetches,
+          wallet.address,
+          INDEXER_FETCH_TTL_MS
+        );
+        if (!shouldFetchIndexer) continue;
+
         const solanaActivities = await fetchSolanaUSDCHistory(wallet.address);
         for (const activity of solanaActivities) {
           indexerTransactions.push({
@@ -784,6 +830,7 @@ router.get('/transactions', async (req: Request, res: Response) => {
             metadata: { decimals: activity.decimals },
           });
         }
+        recentIndexerFetches.set(wallet.address, Date.now());
       }
     }
 
