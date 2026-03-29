@@ -476,6 +476,206 @@ async function fetchSolanaUSDCHistory(walletAddress: string): Promise<SolanaInde
   }
 }
 
+const getWalletBalancesPayload = async (userId: string) => {
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    include: {
+      wallets: {
+        include: {
+          walletBalances: {
+            orderBy: { lastUpdated: 'desc' },
+          },
+        },
+      },
+    },
+  });
+
+  if (!user) {
+    throw new AppError('User not found', 404);
+  }
+
+  const balances: Record<string, unknown> = {
+    ROL: { balance: user.rolBalanceRaw.toString(), balanceUsd: null, decimals: 8 },
+    SOL: { balance: '0', balanceUsd: null, decimals: 9 },
+    USDC: { balance: '0', balanceUsd: null, decimals: 6 },
+    'USDC.E': { balance: '0', balanceUsd: null, decimals: 6 },
+  };
+
+  for (const wallet of user.wallets) {
+    for (const balance of wallet.walletBalances) {
+      const symbol = balance.tokenSymbol.toUpperCase();
+      if (symbol === 'ROL' || symbol === 'SOL' || symbol === 'USDC' || symbol === 'USDC.E') {
+        const key = symbol;
+        const existingBalanceData = balances[key] as {
+          balance: string;
+          balanceUsd: number | null;
+          decimals: number;
+        };
+        const existingBalance = toRawBigInt(existingBalanceData.balance);
+        const newBalance = toRawBigInt(balance.balance);
+        balances[key] = {
+          balance: (existingBalance + newBalance).toString(),
+          balanceUsd: balance.balanceUsd,
+          decimals: balance.decimals,
+        };
+      }
+    }
+  }
+
+  const usdcBalanceData = balances['USDC.E'] as { balance: string; balanceUsd: number | null; decimals: number };
+  if (usdcBalanceData && (!usdcBalanceData.balance || usdcBalanceData.balance === '0')) {
+    const movementWallets = user.wallets.filter((w) => w.blockchain === 'MOVEMENT');
+    if (movementWallets.length) {
+      const indexerBalance = await fetchMovementUSDCBalance(movementWallets[0].address);
+      if (indexerBalance && indexerBalance.balance !== '0') {
+        balances['USDC.E'] = {
+          balance: indexerBalance.balance,
+          balanceUsd: null,
+          decimals: indexerBalance.decimals,
+        };
+      }
+    }
+  }
+
+  return {
+    user,
+    balances,
+    wallets: user.wallets.map((w: typeof user.wallets[0]) => ({
+      id: w.id,
+      address: w.address,
+      blockchain: w.blockchain,
+      balances: w.walletBalances,
+    })),
+  };
+};
+
+const getStoredTransactionsPayload = async (walletIds: string[], page: number, limit: number) => {
+  const skip = (page - 1) * limit;
+  const [transactions, total] = await Promise.all([
+    prisma.walletTransaction.findMany({
+      where: {
+        walletId: { in: walletIds },
+        OR: [
+          { paymentId: null },
+          { payment: { status: 'COMPLETED' } },
+        ],
+      },
+      orderBy: { createdAt: 'desc' },
+      skip,
+      take: limit,
+    }),
+    prisma.walletTransaction.count({
+      where: {
+        walletId: { in: walletIds },
+        OR: [
+          { paymentId: null },
+          { payment: { status: 'COMPLETED' } },
+        ],
+      },
+    }),
+  ]);
+
+  return {
+    transactions,
+    total,
+  };
+};
+
+const collectMovementIndexerTransactions = async (wallet: { id: string; address: string }) => {
+  const activities = await fetchMovementUSDCHistory(wallet.address);
+  const moveActivities = await fetchMovementMoveHistory(wallet.address);
+  const toIndexerRow = (activity: any, tokenAddress: string, tokenSymbol: string) => {
+    const type = (activity.type || 'TRANSFER').toUpperCase();
+    const isDeposit = type.includes('DEPOSIT');
+    const decimals = tokenSymbol === 'MOVE' ? 8 : 6;
+    return {
+      id: `idx-${activity.transaction_version}`,
+      walletId: wallet.id,
+      txHash: activity.transaction_hash || `v-${activity.transaction_version}`,
+      txType: type,
+      amount: activity.amount?.toString() || '0',
+      tokenAddress,
+      tokenSymbol,
+      fromAddress: isDeposit ? activity.requestor_address : wallet.address,
+      toAddress: isDeposit ? wallet.address : activity.requestor_address,
+      status: 'COMPLETED',
+      createdAt: activity.transaction_timestamp,
+      source: 'indexer',
+      metadata: { decimals },
+    };
+  };
+
+  const normalized = [
+    ...activities.map((activity: any) => toIndexerRow(activity, MOVEMENT_USDC_ADDRESS, 'USDC.e')),
+    ...moveActivities.map((activity: any) => toIndexerRow(activity, MOVEMENT_NATIVE_TOKEN, 'MOVE')),
+  ];
+
+  const byHash = new Map<string, any>();
+  for (const item of normalized) {
+    const key = item.txHash;
+    const existing = byHash.get(key);
+    if (!existing) {
+      byHash.set(key, item);
+      continue;
+    }
+
+    const existingType = (existing.txType || '').toUpperCase();
+    const nextType = (item.txType || '').toUpperCase();
+    const isOpposite =
+      (existingType.includes('DEPOSIT') && nextType.includes('WITHDRAW')) ||
+      (existingType.includes('WITHDRAW') && nextType.includes('DEPOSIT'));
+
+    if (isOpposite) {
+      existing.txType = 'TRANSFER';
+      existing.fromAddress = item.fromAddress || existing.fromAddress;
+      existing.toAddress = item.toAddress || existing.toAddress;
+    }
+  }
+
+  return Array.from(byHash.values());
+};
+
+const collectSolanaIndexerTransactions = async (wallet: { id: string; address: string }) => {
+  const solanaActivities = await fetchSolanaUSDCHistory(wallet.address);
+  return solanaActivities.map((activity) => ({
+    id: `sol-${activity.txHash}`,
+    walletId: wallet.id,
+    txHash: activity.txHash,
+    txType: activity.txType,
+    amount: activity.amount,
+    tokenAddress: SOLANA_USDC_MINT,
+    tokenSymbol: 'USDC',
+    fromAddress: activity.fromAddress || wallet.address,
+    toAddress: activity.toAddress || wallet.address,
+    status: 'COMPLETED',
+    createdAt: activity.createdAt || new Date(),
+    source: 'indexer',
+    metadata: { decimals: activity.decimals },
+  }));
+};
+
+const syncWalletAndTransactions = async (userId: string, wallet: { id: string; address: string; blockchain: string }) => {
+  if (wallet.blockchain === 'MOVEMENT') {
+    await syncMovementBalance(wallet.id, wallet.address);
+    const movementTxItems = await collectMovementIndexerTransactions(wallet);
+    if (movementTxItems.length > 0) {
+      await upsertIndexerTransactions(userId, movementTxItems);
+    }
+    return movementTxItems.length;
+  }
+
+  if (wallet.blockchain === 'SOLANA') {
+    await syncSolanaBalance(wallet.id, wallet.address);
+    const solanaTxItems = await collectSolanaIndexerTransactions(wallet);
+    if (solanaTxItems.length > 0) {
+      await upsertIndexerTransactions(userId, solanaTxItems);
+    }
+    return solanaTxItems.length;
+  }
+
+  return 0;
+};
+
 /**
  * GET /api/wallet/balances
  * Get all wallet balances for authenticated user
@@ -486,79 +686,12 @@ router.get('/balances', async (req: Request, res: Response) => {
     if (!userId) {
       throw new AppError('User not authenticated', 401);
     }
-
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      include: {
-        wallets: {
-          include: {
-            walletBalances: {
-              orderBy: { lastUpdated: 'desc' },
-            },
-          },
-        },
-      },
-    });
-
-    if (!user) {
-      throw new AppError('User not found', 404);
-    }
-
-    // Format balances for frontend
-    const balances: Record<string, unknown> = {
-      ROL: { balance: user.rolBalanceRaw.toString(), balanceUsd: null, decimals: 8 },
-      SOL: { balance: '0', balanceUsd: null, decimals: 9 },
-      USDC: { balance: '0', balanceUsd: null, decimals: 6 },
-      'USDC.E': { balance: '0', balanceUsd: null, decimals: 6 },
-    };
-
-    // Aggregate balances from all wallets
-    for (const wallet of user.wallets) {
-      for (const balance of wallet.walletBalances) {
-        const symbol = balance.tokenSymbol.toUpperCase();
-        if (symbol === 'ROL' || symbol === 'SOL' || symbol === 'USDC' || symbol === 'USDC.E') {
-          const key = symbol;
-          const existingBalanceData = balances[key] as {
-            balance: string;
-            balanceUsd: number | null;
-            decimals: number;
-          };
-          const existingBalance = toRawBigInt(existingBalanceData.balance);
-          const newBalance = toRawBigInt(balance.balance);
-          balances[key] = {
-            balance: (existingBalance + newBalance).toString(),
-            balanceUsd: balance.balanceUsd,
-            decimals: balance.decimals,
-          };
-        }
-      }
-    }
-
-    // Indexer fallback for Movement USDC if balance still zero
-    const usdcBalanceData = balances['USDC.E'] as { balance: string; balanceUsd: number | null; decimals: number };
-    if (usdcBalanceData && (!usdcBalanceData.balance || usdcBalanceData.balance === '0')) {
-      const movementWallets = user.wallets.filter((w) => w.blockchain === 'MOVEMENT');
-      if (movementWallets.length) {
-        const indexerBalance = await fetchMovementUSDCBalance(movementWallets[0].address);
-        if (indexerBalance && indexerBalance.balance !== '0') {
-          balances['USDC.E'] = {
-            balance: indexerBalance.balance,
-            balanceUsd: null,
-            decimals: indexerBalance.decimals,
-          };
-        }
-      }
-    }
+    const { balances, wallets } = await getWalletBalancesPayload(userId);
 
     return res.json({
       success: true,
       balances,
-      wallets: user.wallets.map((w: typeof user.wallets[0]) => ({
-        id: w.id,
-        address: w.address,
-        blockchain: w.blockchain,
-        balances: w.walletBalances,
-      })),
+      wallets,
     });
   } catch (error) {
     logger.error('Get balances error', { error });
@@ -598,31 +731,7 @@ router.post('/sync/:walletId', async (req: Request, res: Response) => {
       throw new AppError('Wallet not found', 404);
     }
 
-    // Sync balance based on blockchain
-    if (wallet.blockchain === 'MOVEMENT') {
-      await syncMovementBalance(wallet.id, wallet.address);
-    } else if (wallet.blockchain === 'SOLANA') {
-      await syncSolanaBalance(wallet.id, wallet.address);
-      const solanaActivities = await fetchSolanaUSDCHistory(wallet.address);
-      if (solanaActivities.length > 0) {
-        const solanaTxItems = solanaActivities.map((activity) => ({
-          id: `sol-${activity.txHash}`,
-          walletId: wallet.id,
-          txHash: activity.txHash,
-          txType: activity.txType,
-          amount: activity.amount,
-          tokenAddress: SOLANA_USDC_MINT,
-          tokenSymbol: 'USDC',
-          fromAddress: activity.fromAddress || wallet.address,
-          toAddress: activity.toAddress || wallet.address,
-          status: 'COMPLETED',
-          createdAt: activity.createdAt || new Date(),
-          source: 'indexer',
-          metadata: { decimals: activity.decimals },
-        }));
-        await upsertIndexerTransactions(userId, solanaTxItems);
-      }
-    }
+    await syncWalletAndTransactions(userId, wallet);
 
     // Get updated balances
     const updatedWallet = await prisma.wallet.findUnique({
@@ -658,8 +767,6 @@ router.get('/transactions', async (req: Request, res: Response) => {
 
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 50;
-    const skip = (page - 1) * limit;
-
     const wallets = await prisma.wallet.findMany({
       where: { userId },
       select: { id: true },
@@ -673,29 +780,7 @@ router.get('/transactions', async (req: Request, res: Response) => {
     const includeIndexer = req.query.includeIndexer === '1';
     const syncIndexer = req.query.sync === '1' || includeIndexer;
 
-    const [transactions, total] = await Promise.all([
-      prisma.walletTransaction.findMany({
-        where: {
-          walletId: { in: walletIds },
-          OR: [
-            { paymentId: null },
-            { payment: { status: 'COMPLETED' } },
-          ],
-        },
-        orderBy: { createdAt: 'desc' },
-        skip,
-        take: limit,
-      }),
-      prisma.walletTransaction.count({
-        where: {
-          walletId: { in: walletIds },
-          OR: [
-            { paymentId: null },
-            { payment: { status: 'COMPLETED' } },
-          ],
-        },
-      }),
-    ]);
+    const { transactions, total } = await getStoredTransactionsPayload(walletIds, page, limit);
 
     let indexerTransactions: any[] = [];
     if (includeIndexer) {
@@ -707,83 +792,15 @@ router.get('/transactions', async (req: Request, res: Response) => {
       });
 
       for (const wallet of movementWallets) {
-        const activities = await fetchMovementUSDCHistory(wallet.address);
-        const moveActivities = await fetchMovementMoveHistory(wallet.address);
-        const toIndexerRow = (activity: any, tokenAddress: string, tokenSymbol: string) => {
-          const type = (activity.type || 'TRANSFER').toUpperCase();
-          const isDeposit = type.includes('DEPOSIT');
-          const decimals = tokenSymbol === 'MOVE' ? 8 : 6;
-          return {
-            id: `idx-${activity.transaction_version}`,
-            walletId: wallet.id,
-            txHash: activity.transaction_hash || `v-${activity.transaction_version}`,
-            txType: type,
-            amount: activity.amount?.toString() || '0',
-            tokenAddress,
-            tokenSymbol,
-            fromAddress: isDeposit ? activity.requestor_address : wallet.address,
-            toAddress: isDeposit ? wallet.address : activity.requestor_address,
-            status: 'COMPLETED',
-            createdAt: activity.transaction_timestamp,
-            source: 'indexer',
-            metadata: { decimals },
-          };
-        };
-
-        const normalized = [
-          ...activities.map((activity: any) =>
-            toIndexerRow(activity, MOVEMENT_USDC_ADDRESS, 'USDC.e')
-          ),
-          ...moveActivities.map((activity: any) =>
-            toIndexerRow(activity, MOVEMENT_NATIVE_TOKEN, 'MOVE')
-          ),
-        ];
-
-        // De-duplicate by txHash; collapse DEPOSIT+WITHDRAW into TRANSFER
-        const byHash = new Map<string, any>();
-        for (const item of normalized) {
-          const key = item.txHash;
-          const existing = byHash.get(key);
-          if (!existing) {
-            byHash.set(key, item);
-            continue;
-          }
-
-          const existingType = (existing.txType || '').toUpperCase();
-          const nextType = (item.txType || '').toUpperCase();
-          const isOpposite =
-            (existingType.includes('DEPOSIT') && nextType.includes('WITHDRAW')) ||
-            (existingType.includes('WITHDRAW') && nextType.includes('DEPOSIT'));
-
-          if (isOpposite) {
-            existing.txType = 'TRANSFER';
-            existing.fromAddress = item.fromAddress || existing.fromAddress;
-            existing.toAddress = item.toAddress || existing.toAddress;
-          }
-        }
-
-        indexerTransactions = indexerTransactions.concat(Array.from(byHash.values()));
+        indexerTransactions = indexerTransactions.concat(
+          await collectMovementIndexerTransactions(wallet)
+        );
       }
 
       for (const wallet of solanaWallets) {
-        const solanaActivities = await fetchSolanaUSDCHistory(wallet.address);
-        for (const activity of solanaActivities) {
-          indexerTransactions.push({
-            id: `sol-${activity.txHash}`,
-            walletId: wallet.id,
-            txHash: activity.txHash,
-            txType: activity.txType,
-            amount: activity.amount,
-            tokenAddress: SOLANA_USDC_MINT,
-            tokenSymbol: 'USDC',
-            fromAddress: activity.fromAddress || wallet.address,
-            toAddress: activity.toAddress || wallet.address,
-            status: 'COMPLETED',
-            createdAt: activity.createdAt || new Date(),
-            source: 'indexer',
-            metadata: { decimals: activity.decimals },
-          });
-        }
+        indexerTransactions = indexerTransactions.concat(
+          await collectSolanaIndexerTransactions(wallet)
+        );
       }
     }
 
@@ -816,6 +833,59 @@ router.get('/transactions', async (req: Request, res: Response) => {
       return res.status(error.statusCode).json({ success: false, message: error.message });
     }
     return res.status(500).json({ success: false, message: 'Failed to get transactions' });
+  }
+});
+
+router.get('/overview', async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('User not authenticated', 401);
+    }
+
+    const page = parseInt(req.query.page as string) || 1;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const refresh = req.query.refresh === '1';
+
+    const { wallets } = await getWalletBalancesPayload(userId);
+
+    if (refresh && wallets.length > 0) {
+      let indexedTransactions = 0;
+      for (const wallet of wallets) {
+        indexedTransactions += await syncWalletAndTransactions(userId, wallet);
+      }
+      logger.info('Wallet overview refreshed', {
+        userId,
+        walletCount: wallets.length,
+        indexedTransactions,
+      });
+    }
+
+    const { balances, wallets: refreshedWallets } = await getWalletBalancesPayload(userId);
+    const walletIds = refreshedWallets.map((wallet) => wallet.id);
+    const { transactions, total } =
+      walletIds.length > 0
+        ? await getStoredTransactionsPayload(walletIds, page, limit)
+        : { transactions: [], total: 0 };
+
+    return res.json({
+      success: true,
+      balances,
+      wallets: refreshedWallets,
+      transactions,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    });
+  } catch (error) {
+    logger.error('Get wallet overview error', { error });
+    if (error instanceof AppError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    return res.status(500).json({ success: false, message: 'Failed to get wallet overview' });
   }
 });
 
