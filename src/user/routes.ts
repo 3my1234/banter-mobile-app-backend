@@ -98,18 +98,6 @@ router.get('/:id/posts', async (req: Request, res: Response) => {
             avatarUrl: true,
           },
         },
-        votes: {
-          select: {
-            id: true,
-            userId: true,
-            voteType: true,
-          },
-        },
-        postTags: {
-          include: {
-            tag: true,
-          },
-        },
         _count: {
           select: {
             comments: true,

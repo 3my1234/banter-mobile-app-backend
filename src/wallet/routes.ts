@@ -488,7 +488,12 @@ async function fetchSolanaUSDCHistory(walletAddress: string): Promise<SolanaInde
   }
 }
 
-const getWalletBalancesPayload = async (userId: string) => {
+const getWalletBalancesPayload = async (
+  userId: string,
+  options?: { includeMovementIndexerFallback?: boolean }
+) => {
+  const includeMovementIndexerFallback =
+    options?.includeMovementIndexerFallback === true;
   const user = await prisma.user.findUnique({
     where: { id: userId },
     include: {
@@ -535,7 +540,11 @@ const getWalletBalancesPayload = async (userId: string) => {
   }
 
   const usdcBalanceData = balances['USDC.E'] as { balance: string; balanceUsd: number | null; decimals: number };
-  if (usdcBalanceData && (!usdcBalanceData.balance || usdcBalanceData.balance === '0')) {
+  if (
+    includeMovementIndexerFallback &&
+    usdcBalanceData &&
+    (!usdcBalanceData.balance || usdcBalanceData.balance === '0')
+  ) {
     const movementWallets = user.wallets.filter((w) => w.blockchain === 'MOVEMENT');
     if (movementWallets.length) {
       const indexerBalance = await fetchMovementUSDCBalance(movementWallets[0].address);
@@ -763,7 +772,9 @@ router.get('/balances', async (req: Request, res: Response) => {
     if (!userId) {
       throw new AppError('User not authenticated', 401);
     }
-    const { balances, wallets } = await getWalletBalancesPayload(userId);
+    const { balances, wallets } = await getWalletBalancesPayload(userId, {
+      includeMovementIndexerFallback: true,
+    });
 
     return res.json({
       success: true,
@@ -924,7 +935,9 @@ router.get('/overview', async (req: Request, res: Response) => {
     const limit = parseInt(req.query.limit as string) || 20;
     const refresh = req.query.refresh === '1';
 
-    const { wallets } = await getWalletBalancesPayload(userId);
+    const { wallets } = await getWalletBalancesPayload(userId, {
+      includeMovementIndexerFallback: false,
+    });
 
     if (refresh && wallets.length > 0) {
       const refreshResult = await refreshWalletOverviewForUser(userId, wallets);
@@ -936,7 +949,9 @@ router.get('/overview', async (req: Request, res: Response) => {
       });
     }
 
-    const { balances, wallets: refreshedWallets } = await getWalletBalancesPayload(userId);
+    const { balances, wallets: refreshedWallets } = await getWalletBalancesPayload(userId, {
+      includeMovementIndexerFallback: refresh,
+    });
     const walletIds = refreshedWallets.map((wallet) => wallet.id);
     const { transactions, total } =
       walletIds.length > 0
