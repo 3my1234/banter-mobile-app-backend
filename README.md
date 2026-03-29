@@ -96,6 +96,11 @@ docker-compose logs -f backend
 - `POST /api/images/presign` - Generate presigned S3 upload URL
 - `POST /api/images/save-profile-picture` - Save profile picture URL
 
+### Presale Payments
+- `GET /api/public/payments/presale/packages` - Get presale package catalog
+- `GET /api/public/payments/presale/checkout` - Initialize Flutterwave presale checkout
+- `GET /api/payments/presale/me` - Get current user's reserved presale allocations
+
 ## Database Schema
 
 ### Key Models

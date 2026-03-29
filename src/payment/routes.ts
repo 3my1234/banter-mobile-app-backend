@@ -49,6 +49,38 @@ const VOTE_BUNDLES = [
   { id: 'b5', votes: 10000, price: 10000 },
 ];
 
+type PresalePackage = {
+  id: string;
+  label: string;
+  rolAmount: number;
+  priceUsd: number;
+  note: string;
+};
+
+const PRESALE_PACKAGES: PresalePackage[] = [
+  {
+    id: 'starter',
+    label: 'Starter Allocation',
+    rolAmount: 1000,
+    priceUsd: 500,
+    note: 'Entry package priced at $0.50 per ROL for early committed buyers.',
+  },
+  {
+    id: 'core',
+    label: 'Core Allocation',
+    rolAmount: 5000,
+    priceUsd: 2500,
+    note: 'Mid-tier allocation for buyers who want a larger reserved position.',
+  },
+  {
+    id: 'treasury',
+    label: 'Treasury Allocation',
+    rolAmount: 10000,
+    priceUsd: 5000,
+    note: 'Larger allocation for supporters funding scale, liquidity, and launch operations.',
+  },
+];
+
 const USDC_DECIMALS = 6;
 
 const priceToRaw = (price: number) =>
@@ -56,6 +88,26 @@ const priceToRaw = (price: number) =>
 
 const findBundle = (bundleId: string) =>
   VOTE_BUNDLES.find((bundle) => bundle.id === bundleId);
+const findPresalePackage = (packageId: string) =>
+  PRESALE_PACKAGES.find((pkg) => pkg.id === packageId);
+const normalizeHandle = (value: string) => value.trim().replace(/^@+/, '').toLowerCase();
+const toHandle = (value: string) => (value ? `@${value.replace(/^@+/, '')}` : '');
+const round2 = (value: number) => Math.round(value * 100) / 100;
+const resolvePresaleRedirectUrl = (input?: string | null) => {
+  if (isHttpsUrl(input)) return input!.trim();
+  if (isHttpsUrl(process.env.PRESALE_REDIRECT_URL)) {
+    return process.env.PRESALE_REDIRECT_URL!.trim();
+  }
+  return 'https://buy.sportbanter.online';
+};
+const isPresalePayment = (payment: {
+  paymentType: string;
+  chain: string;
+  metadata: any;
+}) =>
+  payment.paymentType === 'OTHER' &&
+  payment.chain === 'FLUTTERWAVE' &&
+  String(payment.metadata?.purpose || '').toUpperCase() === 'PRESALE';
 
 const normalizeAddress = (value: string) => value.trim().toLowerCase();
 const normalizePhone = (value: string) => {
@@ -537,6 +589,34 @@ const notifyVotePurchaseCompleted = async (payment: {
   });
 };
 
+const notifyPresaleReserved = async (payment: {
+  id: string;
+  userId: string;
+  amount: number;
+  currency: string;
+  metadata: any;
+}) => {
+  const presale = payment?.metadata?.presale || {};
+  const rolAmount = Number(presale?.rolAmount || 0);
+  const packageLabel = String(presale?.packageLabel || 'Presale allocation');
+  await createNotification({
+    userId: payment.userId,
+    type: 'SYSTEM',
+    title: 'ROL Presale Reserved',
+    body: `${packageLabel}: ${rolAmount.toLocaleString()} ROL reserved.`,
+    data: {
+      paymentId: payment.id,
+      amount: payment.amount,
+      currency: payment.currency,
+      packageId: presale?.packageId || null,
+      packageLabel,
+      rolAmount,
+      status: 'RESERVED',
+    },
+    reference: `presale_payment:${payment.id}`,
+  });
+};
+
 const finalizeFlutterwaveVotePayment = async (opts: {
   payment: any;
   transactionId?: string;
@@ -614,6 +694,87 @@ const finalizeFlutterwaveVotePayment = async (opts: {
 
   await notifyVotePurchaseCompleted(updated as any);
 
+  return { payment: updated, transactionId: String(resolvedTransactionId) };
+};
+
+const finalizeFlutterwavePresalePayment = async (opts: {
+  payment: any;
+  transactionId?: string;
+  txRef?: string;
+}) => {
+  const { payment, transactionId, txRef } = opts;
+
+  if (payment.status === 'COMPLETED' && isPresalePayment(payment)) {
+    return { payment, transactionId: payment.txHash || '' };
+  }
+
+  if (!isPresalePayment(payment)) {
+    throw new AppError('Payment is not a presale payment', 400);
+  }
+
+  let resolvedTransactionId = transactionId;
+  if (!resolvedTransactionId && txRef) {
+    const byRef = await findFlutterwaveTransactionByRef(txRef);
+    resolvedTransactionId = byRef || undefined;
+  }
+  if (!resolvedTransactionId) {
+    throw new AppError('transactionId or txRef is required', 400);
+  }
+
+  const verification = await verifyFlutterwavePayment(resolvedTransactionId);
+  if (verification.data.status !== 'successful') {
+    throw new AppError('Payment verification failed', 400);
+  }
+
+  if (txRef && verification.data.tx_ref !== txRef) {
+    throw new AppError('Reference mismatch', 400);
+  }
+
+  if (
+    verification.data.currency &&
+    payment.currency &&
+    verification.data.currency.toUpperCase() !== String(payment.currency).toUpperCase()
+  ) {
+    throw new AppError('Payment currency mismatch', 400);
+  }
+
+  if (verification.data.amount < payment.amount) {
+    throw new AppError('Payment amount mismatch', 400);
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const latest = await tx.payment.findUnique({ where: { id: payment.id } });
+    if (!latest) {
+      throw new AppError('Payment not found', 404);
+    }
+    if (latest.status === 'COMPLETED') {
+      return latest;
+    }
+
+    const currentMetadata = (latest.metadata as any) || {};
+    const currentPresale = currentMetadata.presale || {};
+    const nextMetadata = {
+      ...currentMetadata,
+      flutterwave: verification.data,
+      presale: {
+        ...currentPresale,
+        status: 'RESERVED',
+        reservedAt: new Date().toISOString(),
+      },
+    };
+
+    return tx.payment.update({
+      where: { id: payment.id },
+      data: {
+        status: 'COMPLETED',
+        txHash: String(resolvedTransactionId),
+        completedAt: new Date(),
+        metadata: nextMetadata,
+      },
+    });
+  });
+
+  await notifyPresaleReserved(updated as any);
   return { payment: updated, transactionId: String(resolvedTransactionId) };
 };
 
@@ -776,6 +937,217 @@ router.get('/votes/bundles', (_req: Request, res: Response): Response => {
   });
 });
 
+router.get('/presale/packages', (_req: Request, res: Response): Response => {
+  return res.json({
+    success: true,
+    packages: PRESALE_PACKAGES.map((pkg) => ({
+      id: pkg.id,
+      label: pkg.label,
+      rolAmount: pkg.rolAmount,
+      rolLabel: `${pkg.rolAmount.toLocaleString()} ROL`,
+      priceUsd: pkg.priceUsd,
+      priceLabel: `$${pkg.priceUsd.toLocaleString()}`,
+      unitPriceUsd: round2(pkg.priceUsd / pkg.rolAmount),
+      note: pkg.note,
+    })),
+    checkoutPath: '/api/public/payments/presale/checkout',
+  });
+});
+
+router.get('/presale/checkout', async (req: Request, res: Response): Promise<Response | void> => {
+  try {
+    const packageId = String(req.query.packageId || '').trim();
+    const fullName = String(req.query.fullName || '').trim();
+    const emailInput = String(req.query.email || '').trim().toLowerCase();
+    const handleInput = String(req.query.banterHandle || '').trim();
+    const walletAddress = String(req.query.walletAddress || '').trim();
+    const redirectUrl = String(req.query.redirectUrl || '').trim();
+
+    if (!packageId) {
+      throw new AppError('packageId is required', 400);
+    }
+    if (!fullName || !emailInput || !handleInput) {
+      throw new AppError('fullName, email, and banterHandle are required', 400);
+    }
+
+    const pkg = findPresalePackage(packageId);
+    if (!pkg) {
+      throw new AppError('Invalid presale package', 400);
+    }
+
+    const normalizedHandle = normalizeHandle(handleInput);
+    const userSearchOr: any[] = [];
+    if (normalizedHandle) {
+      userSearchOr.push({
+        username: { equals: normalizedHandle, mode: 'insensitive' },
+      });
+    }
+    if (emailInput) {
+      userSearchOr.push({
+        email: { equals: emailInput, mode: 'insensitive' },
+      });
+    }
+
+    const buyer = userSearchOr.length
+      ? await prisma.user.findFirst({
+          where: {
+            OR: userSearchOr,
+          },
+        })
+      : null;
+    if (!buyer) {
+      throw new AppError(
+        'No Banter account matched this handle/email. Create account first, then retry.',
+        404
+      );
+    }
+
+    const customerEmail = normalizeEmail(emailInput || buyer.email, buyer.id);
+    const displayHandle = toHandle(buyer.username || normalizedHandle);
+    const currency = resolveFlutterwaveCurrency(req.query.currency, buyer);
+    const chargeAmount = await resolveFlutterwaveAmount(pkg.priceUsd, currency);
+    const fxRate = currency === 'USD' ? 1 : round2(chargeAmount / pkg.priceUsd);
+    const appRedirectUrl = resolvePresaleRedirectUrl(redirectUrl);
+    const flutterwaveRedirectUrl = resolveFlutterwaveProviderRedirect(req);
+    const txRef = `PRESALE_${buyer.id}_${Date.now()}`;
+
+    const payment = await prisma.payment.create({
+      data: {
+        userId: buyer.id,
+        paymentType: 'OTHER',
+        chain: 'FLUTTERWAVE',
+        amount: chargeAmount,
+        amountRaw: chargeAmount.toFixed(2),
+        currency,
+        tokenAddress: 'FLUTTERWAVE',
+        fromAddress: customerEmail,
+        toAddress: 'FLUTTERWAVE',
+        status: 'PENDING',
+        metadata: {
+          purpose: 'PRESALE',
+          txRef,
+          appRedirectUrl,
+          usdAmount: pkg.priceUsd,
+          fxRate,
+          presale: {
+            packageId: pkg.id,
+            packageLabel: pkg.label,
+            rolAmount: pkg.rolAmount,
+            unitPriceUsd: round2(pkg.priceUsd / pkg.rolAmount),
+            totalUsd: pkg.priceUsd,
+            fullName,
+            email: customerEmail,
+            banterHandle: displayHandle || toHandle(normalizedHandle),
+            walletAddress: walletAddress || null,
+            status: 'PENDING',
+          },
+        },
+      },
+    });
+
+    const phone = normalizePhone(buyer.phone || '');
+    const logo = process.env.FLUTTERWAVE_LOGO_URL || process.env.MEDIA_CDN_BASE || '';
+    const initPayload = {
+      email: customerEmail,
+      amount: chargeAmount,
+      currency,
+      tx_ref: txRef,
+      customer: {
+        email: customerEmail,
+        name: fullName,
+        phonenumber: phone,
+        phone_number: phone,
+      },
+      meta: {
+        paymentId: payment.id,
+        userId: buyer.id,
+        purpose: 'PRESALE',
+        packageId: pkg.id,
+        rolAmount: pkg.rolAmount,
+        banterHandle: displayHandle || normalizedHandle,
+      },
+      customizations: {
+        title: 'Banter x Rolley Presale',
+        description: `${pkg.label} - ${pkg.rolAmount.toLocaleString()} ROL`,
+        ...(logo ? { logo } : {}),
+      },
+      redirect_url: flutterwaveRedirectUrl,
+      payment_options: resolveFlutterwavePaymentOptions(buyer),
+    };
+
+    const initResult = await initializeFlutterwavePayment(initPayload);
+
+    if (String(req.query.response || '').toLowerCase() === 'json') {
+      return res.json({
+        success: true,
+        paymentId: payment.id,
+        paymentUrl: initResult.data.link,
+        reference: txRef,
+      });
+    }
+
+    res.redirect(302, initResult.data.link);
+  } catch (error) {
+    logger.error('Create Flutterwave presale checkout error', { error });
+    if (error instanceof AppError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    const message =
+      (error as any)?.response?.data?.message ||
+      (error as Error)?.message ||
+      'Failed to initialize presale checkout';
+    return res.status(500).json({ success: false, message });
+  }
+});
+
+router.get('/presale/me', async (req: Request, res: Response): Promise<Response | void> => {
+  try {
+    const userId = req.user?.userId;
+    if (!userId) {
+      throw new AppError('User not authenticated', 401);
+    }
+
+    const payments = await prisma.payment.findMany({
+      where: {
+        userId,
+        chain: 'FLUTTERWAVE',
+        paymentType: 'OTHER',
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 100,
+    });
+
+    const allocations = payments
+      .filter((payment) => isPresalePayment(payment as any))
+      .map((payment) => {
+        const metadata = (payment.metadata as any) || {};
+        const presale = metadata.presale || {};
+        return {
+          paymentId: payment.id,
+          status: payment.status,
+          packageId: presale.packageId || null,
+          packageLabel: presale.packageLabel || null,
+          rolAmount: Number(presale.rolAmount || 0),
+          totalUsd: Number(presale.totalUsd || metadata.usdAmount || 0),
+          paidAmount: payment.amount,
+          paidCurrency: payment.currency,
+          txRef: metadata.txRef || null,
+          txHash: payment.txHash || null,
+          reservedAt: presale.reservedAt || payment.completedAt,
+          createdAt: payment.createdAt,
+        };
+      });
+
+    return res.json({ success: true, allocations });
+  } catch (error) {
+    logger.error('Get presale allocations error', { error });
+    if (error instanceof AppError) {
+      return res.status(error.statusCode).json({ success: false, message: error.message });
+    }
+    return res.status(500).json({ success: false, message: 'Failed to get presale allocations' });
+  }
+});
+
 router.get('/flutterwave/callback', async (req: Request, res: Response): Promise<void> => {
   const txRef = String(req.query.tx_ref || req.query.txRef || '');
   const transactionId = String(req.query.transaction_id || req.query.transactionId || '');
@@ -888,6 +1260,12 @@ router.post('/flutterwave/webhook', async (req: Request, res: Response): Promise
 
     if (payment.paymentType === 'ROLLEY_STAKE') {
       await finalizeFlutterwaveRolleyPayment({
+        payment,
+        transactionId,
+        txRef,
+      });
+    } else if (isPresalePayment(payment as any)) {
+      await finalizeFlutterwavePresalePayment({
         payment,
         transactionId,
         txRef,
@@ -1227,6 +1605,9 @@ router.post('/flutterwave/votes/verify', async (req: Request, res: Response): Pr
     if (payment.userId !== userId) {
       throw new AppError('Not authorized to verify this payment', 403);
     }
+    if (payment.paymentType !== 'VOTE_PURCHASE') {
+      throw new AppError('Payment is not a vote purchase', 400);
+    }
     const finalized = await finalizeFlutterwaveVotePayment({
       payment,
       transactionId,
@@ -1261,6 +1642,9 @@ router.get('/flutterwave/votes/status/:paymentId', async (req: Request, res: Res
     }
     if (payment.userId !== userId) {
       throw new AppError('Not authorized to access this payment', 403);
+    }
+    if (payment.paymentType !== 'VOTE_PURCHASE') {
+      throw new AppError('Payment is not a vote purchase', 400);
     }
 
     return res.json({
