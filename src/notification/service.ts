@@ -2,6 +2,7 @@ import { NotificationType, Prisma } from '@prisma/client';
 import { prisma } from '../index';
 import { logger } from '../utils/logger';
 import { getIO } from '../websocket/socket';
+import { sendPushToUser } from './pushService';
 
 export const buildUserRoom = (userId: string) => `user:${userId}`;
 
@@ -146,6 +147,18 @@ export async function createNotification(input: CreateNotificationInput) {
       },
     });
     emitNotificationCreated(created);
+    if (created.type === 'WALLET_RECEIVE') {
+      void sendPushToUser({
+        userId: created.userId,
+        title: created.title,
+        body: resolvedBody || created.title,
+        data: {
+          notificationId: created.id,
+          type: created.type,
+          ...(typeof input.data === 'object' && input.data ? (input.data as Record<string, unknown>) : {}),
+        },
+      });
+    }
     return created;
   } catch (error: any) {
     if (error?.code === 'P2002' && input.reference) {

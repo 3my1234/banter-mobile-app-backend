@@ -43,6 +43,7 @@ model User {
   commentReactions CommentReaction[]
   payments        Payment[]
   notifications   Notification[]
+  devicePushTokens DevicePushToken[]
   pointLedger     PointLedger[]
   pcaVotes        PcaVote[]
   followers       Follow[] @relation("UserFollowers")
@@ -501,6 +502,22 @@ model Notification {
 
   @@index([userId, createdAt])
   @@index([type])
+}
+
+model DevicePushToken {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token      String   @unique
+  platform   String?
+  appVersion String?
+  active     Boolean  @default(true)
+  lastSeenAt DateTime @default(now())
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([userId, active])
+  @@index([lastSeenAt])
 }
 
 model PointLedger {
