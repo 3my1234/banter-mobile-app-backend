@@ -17,6 +17,18 @@ const MOVEMENT_NATIVE_TOKEN = '0x1::aptos_coin::AptosCoin';
 const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
 const SOLANA_USDC_MINT = process.env.SOLANA_USDC_MINT || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const SOLANA_TX_HISTORY_LIMIT = Number.parseInt(process.env.SOLANA_TX_HISTORY_LIMIT || '50', 10);
+const WALLET_OVERVIEW_REFRESH_COOLDOWN_MS = Number.parseInt(
+  process.env.WALLET_OVERVIEW_REFRESH_COOLDOWN_MS || '45000',
+  10
+);
+const WALLET_REFRESH_STATE_TTL_MS = 15 * 60 * 1000;
+const walletRefreshStateByUser = new Map<
+  string,
+  {
+    lastCompletedAt: number;
+    inFlight: Promise<number> | null;
+  }
+>();
 const toRawBigInt = (value: string | null | undefined) => {
   try {
     return BigInt(value || '0');
@@ -676,6 +688,71 @@ const syncWalletAndTransactions = async (userId: string, wallet: { id: string; a
   return 0;
 };
 
+const trimWalletRefreshState = () => {
+  const now = Date.now();
+  for (const [key, state] of walletRefreshStateByUser.entries()) {
+    if (!state.inFlight && now - state.lastCompletedAt > WALLET_REFRESH_STATE_TTL_MS) {
+      walletRefreshStateByUser.delete(key);
+    }
+  }
+};
+
+const refreshWalletOverviewForUser = async (
+  userId: string,
+  wallets: Array<{ id: string; address: string; blockchain: string }>
+) => {
+  trimWalletRefreshState();
+  const now = Date.now();
+  const existing = walletRefreshStateByUser.get(userId);
+
+  if (existing?.inFlight) {
+    const indexedTransactions = await existing.inFlight;
+    return {
+      indexedTransactions,
+      mode: 'joined_in_flight' as const,
+    };
+  }
+
+  if (existing && now - existing.lastCompletedAt < WALLET_OVERVIEW_REFRESH_COOLDOWN_MS) {
+    return {
+      indexedTransactions: 0,
+      mode: 'cooldown_skip' as const,
+    };
+  }
+
+  const state = existing || { lastCompletedAt: 0, inFlight: null as Promise<number> | null };
+  const refreshPromise = Promise.all(
+    wallets.map(async (wallet) => {
+      try {
+        return await syncWalletAndTransactions(userId, wallet);
+      } catch (error) {
+        logger.warn('Wallet refresh failed for wallet', {
+          userId,
+          walletId: wallet.id,
+          blockchain: wallet.blockchain,
+          error,
+        });
+        return 0;
+      }
+    })
+  ).then((counts) => counts.reduce((sum, count) => sum + count, 0));
+
+  state.inFlight = refreshPromise;
+  walletRefreshStateByUser.set(userId, state);
+
+  try {
+    const indexedTransactions = await refreshPromise;
+    state.lastCompletedAt = Date.now();
+    return {
+      indexedTransactions,
+      mode: 'refreshed' as const,
+    };
+  } finally {
+    state.inFlight = null;
+    walletRefreshStateByUser.set(userId, state);
+  }
+};
+
 /**
  * GET /api/wallet/balances
  * Get all wallet balances for authenticated user
@@ -850,14 +927,12 @@ router.get('/overview', async (req: Request, res: Response) => {
     const { wallets } = await getWalletBalancesPayload(userId);
 
     if (refresh && wallets.length > 0) {
-      let indexedTransactions = 0;
-      for (const wallet of wallets) {
-        indexedTransactions += await syncWalletAndTransactions(userId, wallet);
-      }
+      const refreshResult = await refreshWalletOverviewForUser(userId, wallets);
       logger.info('Wallet overview refreshed', {
         userId,
         walletCount: wallets.length,
-        indexedTransactions,
+        indexedTransactions: refreshResult.indexedTransactions,
+        mode: refreshResult.mode,
       });
     }
 
