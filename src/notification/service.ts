@@ -157,6 +157,12 @@ export async function createNotification(input: CreateNotificationInput) {
           type: created.type,
           ...(typeof input.data === 'object' && input.data ? (input.data as Record<string, unknown>) : {}),
         },
+      }).catch((error) => {
+        logger.warn('Push dispatch failed for wallet notification', {
+          userId: created.userId,
+          notificationId: created.id,
+          error,
+        });
       });
     }
     return created;
