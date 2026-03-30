@@ -5,6 +5,7 @@ import { logger } from '../utils/logger';
 import { AppError } from '../utils/errorHandler';
 import { syncMovementBalance, syncSolanaBalance } from '../wallet/balanceIndexer';
 import { createNotification } from '../notification/service';
+import { getRolleyServiceBaseUrl } from '../points/service';
 import { Connection, PublicKey } from '@solana/web3.js';
 
 const router = Router();
@@ -20,6 +21,22 @@ const MOVEMENT_NATIVE_TOKEN = '0x1::aptos_coin::AptosCoin';
 const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
 const SOLANA_USDC_MINT = process.env.SOLANA_USDC_MINT || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const SOLANA_TX_HISTORY_LIMIT = Number.parseInt(process.env.SOLANA_TX_HISTORY_LIMIT || '50', 10);
+const ROLLEY_SERVICE_BASE = getRolleyServiceBaseUrl();
+const ROLLEY_ADMIN_KEY = (process.env.ROLLEY_ADMIN_KEY || process.env.VITE_ROLLEY_ADMIN_KEY || '').trim();
+
+type RolleyStakeSnapshot = {
+  id: string;
+  user_id: string;
+  sport?: 'SOCCER' | 'BASKETBALL' | string;
+  stake_asset?: 'USD' | 'USDC' | 'ROL' | string;
+  status?: 'ACTIVE' | 'LOST' | 'MATURED' | 'WITHDRAWN' | string;
+  latest_outcome?: 'PENDING' | 'WIN' | 'LOSS' | 'VOID' | string | null;
+  principal_amount?: number;
+  current_amount?: number;
+  lock_days?: number;
+  days_completed?: number;
+  days_remaining?: number;
+};
 
 const toRawBigInt = (value: string | null | undefined) => {
   try {
@@ -597,6 +614,108 @@ async function syncSolanaIndexerTransactionsForAllWallets() {
   return { wallets: solanaWallets.length, upserted, failed };
 }
 
+async function fetchRolleyPositionsForAsset(asset: 'USD' | 'USDC' | 'ROL', asOfDate: string) {
+  const headers: Record<string, string> = {};
+  if (ROLLEY_ADMIN_KEY) {
+    headers['X-Admin-Key'] = ROLLEY_ADMIN_KEY;
+  }
+  const response = await axios.get(`${ROLLEY_SERVICE_BASE}/api/v1/admin/rollover/positions`, {
+    params: {
+      as_of_date: asOfDate,
+      stake_asset: asset,
+    },
+    headers,
+    timeout: 15000,
+  });
+  return Array.isArray(response.data?.stakes) ? (response.data.stakes as RolleyStakeSnapshot[]) : [];
+}
+
+async function syncRolleyStakeStatusNotifications() {
+  const asOfDate = new Date().toISOString().slice(0, 10);
+  const assets: Array<'USD' | 'USDC' | 'ROL'> = ['USD', 'USDC', 'ROL'];
+  let scanned = 0;
+  let created = 0;
+  let failed = 0;
+
+  for (const asset of assets) {
+    let stakes: RolleyStakeSnapshot[] = [];
+    try {
+      stakes = await fetchRolleyPositionsForAsset(asset, asOfDate);
+    } catch (error) {
+      failed += 1;
+      logger.warn('Ops cron: Rolley positions fetch failed', { asset, asOfDate, error });
+      continue;
+    }
+
+    for (const stake of stakes) {
+      scanned += 1;
+      const status = String(stake.status || '').toUpperCase();
+      const latestOutcome = String(stake.latest_outcome || '').toUpperCase();
+      const normalizedStatus = status === 'ACTIVE' && latestOutcome === 'LOSS' ? 'LOST' : status;
+      if (normalizedStatus !== 'LOST' && normalizedStatus !== 'MATURED') {
+        continue;
+      }
+      if (!stake.id || !stake.user_id) {
+        continue;
+      }
+
+      const reference = `rolley_stake_status:${stake.id}:${normalizedStatus}`;
+      try {
+        const existing = await prisma.notification.findUnique({
+          where: { reference },
+          select: { id: true },
+        });
+        if (existing) {
+          continue;
+        }
+
+        const sport = String(stake.sport || '').toUpperCase();
+        const assetCode = String(stake.stake_asset || asset).toUpperCase();
+        const lockDays = Number(stake.lock_days || 0);
+        const daysCompleted = Number(stake.days_completed || 0);
+        const principal = Number(stake.principal_amount || 0);
+        const current = Number(stake.current_amount || 0);
+        const title =
+          normalizedStatus === 'LOST' ? 'Rolley stake settled as loss' : 'Rolley stake matured';
+        const body =
+          normalizedStatus === 'LOST'
+            ? `Your ${sport ? `${sport} ` : ''}${assetCode} rollover position ended as LOSS.`
+            : `Your ${sport ? `${sport} ` : ''}${assetCode} rollover position matured successfully.`;
+
+        await createNotification({
+          userId: stake.user_id,
+          type: 'SYSTEM',
+          title,
+          body,
+          data: {
+            stakeId: stake.id,
+            sport: sport || null,
+            stakeAsset: assetCode,
+            status: normalizedStatus,
+            latestOutcome: latestOutcome || null,
+            principalAmount: principal,
+            currentAmount: current,
+            lockDays: Number.isFinite(lockDays) ? lockDays : 0,
+            daysCompleted: Number.isFinite(daysCompleted) ? daysCompleted : 0,
+          },
+          reference,
+        });
+        created += 1;
+      } catch (error) {
+        failed += 1;
+        logger.warn('Ops cron: Rolley stake notification sync failed', {
+          stakeId: stake.id,
+          userId: stake.user_id,
+          status: normalizedStatus,
+          error,
+        });
+      }
+    }
+  }
+
+  return { scanned, created, failed };
+}
+
 router.post('/cron/wallet-indexing', async (req: Request, res: Response): Promise<Response> => {
   try {
     assertCronAuthorized(req);
@@ -604,12 +723,14 @@ router.post('/cron/wallet-indexing', async (req: Request, res: Response): Promis
     const balanceSummary = await syncBalancesForAllWallets();
     const movementTxSummary = await syncMovementIndexerTransactionsForAllWallets();
     const solanaTxSummary = await syncSolanaIndexerTransactionsForAllWallets();
+    const rolleyStakeSummary = await syncRolleyStakeStatusNotifications();
 
     return res.json({
       success: true,
       balances: balanceSummary,
       movementTransactions: movementTxSummary,
       solanaTransactions: solanaTxSummary,
+      rolleyStakeStatusNotifications: rolleyStakeSummary,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
