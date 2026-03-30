@@ -49,34 +49,34 @@ const VOTE_BUNDLES = [
   { id: 'b5', votes: 10000, price: 10000 },
 ];
 
-type PresalePackage = {
+type PresaleAllocationOption = {
   id: string;
   label: string;
   rolAmount: number;
-  priceUsd: number;
   note: string;
 };
 
-const PRESALE_PACKAGES: PresalePackage[] = [
+const PRESALE_MIN_ROL = 10;
+const PRESALE_MAX_ROL = 10_000;
+const PRESALE_UNIT_PRICE_USD = 0.5;
+
+const PRESALE_SUGGESTED_ALLOCATIONS: PresaleAllocationOption[] = [
   {
     id: 'starter',
     label: 'Starter Allocation',
     rolAmount: 1000,
-    priceUsd: 500,
     note: 'Entry package priced at $0.50 per ROL for early committed buyers.',
   },
   {
     id: 'core',
     label: 'Core Allocation',
     rolAmount: 5000,
-    priceUsd: 2500,
     note: 'Mid-tier allocation for buyers who want a larger reserved position.',
   },
   {
     id: 'treasury',
     label: 'Treasury Allocation',
     rolAmount: 10000,
-    priceUsd: 5000,
     note: 'Larger allocation for supporters funding scale, liquidity, and launch operations.',
   },
 ];
@@ -88,11 +88,70 @@ const priceToRaw = (price: number) =>
 
 const findBundle = (bundleId: string) =>
   VOTE_BUNDLES.find((bundle) => bundle.id === bundleId);
-const findPresalePackage = (packageId: string) =>
-  PRESALE_PACKAGES.find((pkg) => pkg.id === packageId);
 const normalizeHandle = (value: string) => value.trim().replace(/^@+/, '').toLowerCase();
 const toHandle = (value: string) => (value ? `@${value.replace(/^@+/, '')}` : '');
 const round2 = (value: number) => Math.round(value * 100) / 100;
+const toPresalePriceUsd = (rolAmount: number) => round2(rolAmount * PRESALE_UNIT_PRICE_USD);
+const parsePresaleRolAmount = (raw: unknown) => {
+  if (raw === undefined || raw === null) return null;
+  const normalized = String(raw).trim().replace(/,/g, '').replace(/\s*rol$/i, '');
+  if (!normalized) return null;
+  const value = Number(normalized);
+  if (!Number.isFinite(value)) return null;
+  return Math.floor(value);
+};
+
+type ResolvedPresaleSelection = {
+  packageId: string;
+  packageLabel: string;
+  rolAmount: number;
+  priceUsd: number;
+  unitPriceUsd: number;
+  note?: string;
+};
+
+const resolvePresaleSelection = (query: Request['query']): ResolvedPresaleSelection => {
+  const requestedRolAmount = parsePresaleRolAmount(query.rolAmount);
+
+  if (requestedRolAmount !== null) {
+    if (!Number.isInteger(requestedRolAmount)) {
+      throw new AppError('rolAmount must be a whole number', 400);
+    }
+    if (requestedRolAmount < PRESALE_MIN_ROL || requestedRolAmount > PRESALE_MAX_ROL) {
+      throw new AppError(
+        `rolAmount must be between ${PRESALE_MIN_ROL} and ${PRESALE_MAX_ROL}`,
+        400
+      );
+    }
+    return {
+      packageId: 'custom',
+      packageLabel: `${requestedRolAmount.toLocaleString()} ROL Allocation`,
+      rolAmount: requestedRolAmount,
+      priceUsd: toPresalePriceUsd(requestedRolAmount),
+      unitPriceUsd: PRESALE_UNIT_PRICE_USD,
+      note: 'Custom allocation selected by buyer.',
+    };
+  }
+
+  const legacyPackageId = String(query.packageId || '').trim();
+  if (legacyPackageId) {
+    const legacy = PRESALE_SUGGESTED_ALLOCATIONS.find((pkg) => pkg.id === legacyPackageId);
+    if (!legacy) {
+      throw new AppError('Invalid presale package', 400);
+    }
+    return {
+      packageId: legacy.id,
+      packageLabel: legacy.label,
+      rolAmount: legacy.rolAmount,
+      priceUsd: toPresalePriceUsd(legacy.rolAmount),
+      unitPriceUsd: PRESALE_UNIT_PRICE_USD,
+      note: legacy.note,
+    };
+  }
+
+  throw new AppError('rolAmount is required', 400);
+};
+
 const resolvePresaleRedirectUrl = (input?: string | null) => {
   if (isHttpsUrl(input)) return input!.trim();
   if (isHttpsUrl(process.env.PRESALE_REDIRECT_URL)) {
@@ -940,14 +999,19 @@ router.get('/votes/bundles', (_req: Request, res: Response): Response => {
 router.get('/presale/packages', (_req: Request, res: Response): Response => {
   return res.json({
     success: true,
-    packages: PRESALE_PACKAGES.map((pkg) => ({
+    unitPriceUsd: PRESALE_UNIT_PRICE_USD,
+    limits: {
+      minRol: PRESALE_MIN_ROL,
+      maxRol: PRESALE_MAX_ROL,
+    },
+    packages: PRESALE_SUGGESTED_ALLOCATIONS.map((pkg) => ({
       id: pkg.id,
       label: pkg.label,
       rolAmount: pkg.rolAmount,
       rolLabel: `${pkg.rolAmount.toLocaleString()} ROL`,
-      priceUsd: pkg.priceUsd,
-      priceLabel: `$${pkg.priceUsd.toLocaleString()}`,
-      unitPriceUsd: round2(pkg.priceUsd / pkg.rolAmount),
+      priceUsd: toPresalePriceUsd(pkg.rolAmount),
+      priceLabel: `$${toPresalePriceUsd(pkg.rolAmount).toLocaleString()}`,
+      unitPriceUsd: PRESALE_UNIT_PRICE_USD,
       note: pkg.note,
     })),
     checkoutPath: '/api/public/payments/presale/checkout',
@@ -956,24 +1020,15 @@ router.get('/presale/packages', (_req: Request, res: Response): Response => {
 
 router.get('/presale/checkout', async (req: Request, res: Response): Promise<Response | void> => {
   try {
-    const packageId = String(req.query.packageId || '').trim();
     const fullName = String(req.query.fullName || '').trim();
     const emailInput = String(req.query.email || '').trim().toLowerCase();
     const handleInput = String(req.query.banterHandle || '').trim();
     const walletAddress = String(req.query.walletAddress || '').trim();
     const redirectUrl = String(req.query.redirectUrl || '').trim();
-
-    if (!packageId) {
-      throw new AppError('packageId is required', 400);
-    }
     if (!fullName || !emailInput || !handleInput) {
       throw new AppError('fullName, email, and banterHandle are required', 400);
     }
-
-    const pkg = findPresalePackage(packageId);
-    if (!pkg) {
-      throw new AppError('Invalid presale package', 400);
-    }
+    const selection = resolvePresaleSelection(req.query);
 
     const normalizedHandle = normalizeHandle(handleInput);
     const userSearchOr: any[] = [];
@@ -1005,8 +1060,8 @@ router.get('/presale/checkout', async (req: Request, res: Response): Promise<Res
     const customerEmail = normalizeEmail(emailInput || buyer.email, buyer.id);
     const displayHandle = toHandle(buyer.username || normalizedHandle);
     const currency = resolveFlutterwaveCurrency(req.query.currency, buyer);
-    const chargeAmount = await resolveFlutterwaveAmount(pkg.priceUsd, currency);
-    const fxRate = currency === 'USD' ? 1 : round2(chargeAmount / pkg.priceUsd);
+    const chargeAmount = await resolveFlutterwaveAmount(selection.priceUsd, currency);
+    const fxRate = currency === 'USD' ? 1 : round2(chargeAmount / selection.priceUsd);
     const appRedirectUrl = resolvePresaleRedirectUrl(redirectUrl);
     const flutterwaveRedirectUrl = resolveFlutterwaveProviderRedirect(req);
     const txRef = `PRESALE_${buyer.id}_${Date.now()}`;
@@ -1027,19 +1082,20 @@ router.get('/presale/checkout', async (req: Request, res: Response): Promise<Res
           purpose: 'PRESALE',
           txRef,
           appRedirectUrl,
-          usdAmount: pkg.priceUsd,
+          usdAmount: selection.priceUsd,
           fxRate,
           presale: {
-            packageId: pkg.id,
-            packageLabel: pkg.label,
-            rolAmount: pkg.rolAmount,
-            unitPriceUsd: round2(pkg.priceUsd / pkg.rolAmount),
-            totalUsd: pkg.priceUsd,
+            packageId: selection.packageId,
+            packageLabel: selection.packageLabel,
+            rolAmount: selection.rolAmount,
+            unitPriceUsd: selection.unitPriceUsd,
+            totalUsd: selection.priceUsd,
             fullName,
             email: customerEmail,
             banterHandle: displayHandle || toHandle(normalizedHandle),
             walletAddress: walletAddress || null,
             status: 'PENDING',
+            note: selection.note || null,
           },
         },
       },
@@ -1062,13 +1118,13 @@ router.get('/presale/checkout', async (req: Request, res: Response): Promise<Res
         paymentId: payment.id,
         userId: buyer.id,
         purpose: 'PRESALE',
-        packageId: pkg.id,
-        rolAmount: pkg.rolAmount,
+        packageId: selection.packageId,
+        rolAmount: selection.rolAmount,
         banterHandle: displayHandle || normalizedHandle,
       },
       customizations: {
         title: 'Banter x Rolley Presale',
-        description: `${pkg.label} - ${pkg.rolAmount.toLocaleString()} ROL`,
+        description: `${selection.packageLabel} - ${selection.rolAmount.toLocaleString()} ROL`,
         ...(logo ? { logo } : {}),
       },
       redirect_url: flutterwaveRedirectUrl,
