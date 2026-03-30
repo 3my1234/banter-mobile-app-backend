@@ -22,7 +22,23 @@ const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.s
 const SOLANA_USDC_MINT = process.env.SOLANA_USDC_MINT || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const SOLANA_TX_HISTORY_LIMIT = Number.parseInt(process.env.SOLANA_TX_HISTORY_LIMIT || '50', 10);
 const ROLLEY_SERVICE_BASE = getRolleyServiceBaseUrl();
-const ROLLEY_ADMIN_KEY = (process.env.ROLLEY_ADMIN_KEY || process.env.VITE_ROLLEY_ADMIN_KEY || '').trim();
+const resolveRolleyAdminKey = () => {
+  const directCandidates = [
+    process.env.ROLLEY_ADMIN_KEY,
+    process.env.VITE_ROLLEY_ADMIN_KEY,
+    process.env.ADMIN_REFRESH_KEY,
+  ];
+  for (const value of directCandidates) {
+    const token = (value || '').trim();
+    if (token) return token;
+  }
+  const firstFromList = (process.env.ADMIN_REFRESH_KEYS || '')
+    .split(',')
+    .map((item) => item.trim())
+    .find(Boolean);
+  return firstFromList || '';
+};
+const ROLLEY_ADMIN_KEY = resolveRolleyAdminKey();
 
 type RolleyStakeSnapshot = {
   id: string;
