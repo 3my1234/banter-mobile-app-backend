@@ -1076,17 +1076,60 @@ router.get('/presale/checkout', async (req: Request, res: Response): Promise<Res
     };
 
     const initResult = await initializeFlutterwavePayment(initPayload);
+    const paymentUrl = String((initResult as any)?.data?.link || '').trim();
+
+    if (!isHttpsUrl(paymentUrl)) {
+      logger.error('Flutterwave presale init returned invalid payment link', {
+        txRef,
+        paymentId: payment.id,
+        link: paymentUrl,
+        flutterwaveData: (initResult as any)?.data || null,
+      });
+      throw new AppError('Failed to initialize checkout link. Please try again.', 502);
+    }
+
+    if (/^https:\/\/checkout\.flutterwave\.com\/v3\/hosted\/pay\/?$/i.test(paymentUrl)) {
+      logger.error('Flutterwave presale init returned incomplete hosted pay URL', {
+        txRef,
+        paymentId: payment.id,
+        link: paymentUrl,
+        flutterwaveData: (initResult as any)?.data || null,
+      });
+      throw new AppError('Checkout session is incomplete. Please retry in a moment.', 502);
+    }
 
     if (String(req.query.response || '').toLowerCase() === 'json') {
       return res.json({
         success: true,
         paymentId: payment.id,
-        paymentUrl: initResult.data.link,
+        paymentUrl,
         reference: txRef,
       });
     }
 
-    res.redirect(302, initResult.data.link);
+    const escapedPaymentUrl = paymentUrl
+      .replace(/&/g, '&amp;')
+      .replace(/"/g, '&quot;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+
+    res.setHeader('Cache-Control', 'no-store');
+    return res.status(200).type('html').send(`<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Redirecting to Checkout...</title>
+    <meta http-equiv="refresh" content="0;url=${escapedPaymentUrl}" />
+  </head>
+  <body style="font-family: Arial, sans-serif; background: #0b0b0b; color: #f5f5f5; padding: 24px;">
+    <p>Redirecting to secure Flutterwave checkout...</p>
+    <p>If you are not redirected automatically, <a href="${escapedPaymentUrl}" style="color:#ff7a00;">continue to checkout</a>.</p>
+    <script>
+      window.location.replace(${JSON.stringify(paymentUrl)});
+    </script>
+  </body>
+</html>`);
   } catch (error) {
     logger.error('Create Flutterwave presale checkout error', { error });
     if (error instanceof AppError) {
