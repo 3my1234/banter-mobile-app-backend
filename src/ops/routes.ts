@@ -631,10 +631,11 @@ async function syncSolanaIndexerTransactionsForAllWallets() {
 }
 
 async function fetchRolleyPositionsForAsset(asset: 'USD' | 'USDC' | 'ROL', asOfDate: string) {
-  const headers: Record<string, string> = {};
-  if (ROLLEY_ADMIN_KEY) {
-    headers['X-Admin-Key'] = ROLLEY_ADMIN_KEY;
+  if (!ROLLEY_ADMIN_KEY) {
+    return [];
   }
+  const headers: Record<string, string> = {};
+  headers['X-Admin-Key'] = ROLLEY_ADMIN_KEY;
   const response = await axios.get(`${ROLLEY_SERVICE_BASE}/api/v1/admin/rollover/positions`, {
     params: {
       as_of_date: asOfDate,
@@ -647,6 +648,10 @@ async function fetchRolleyPositionsForAsset(asset: 'USD' | 'USDC' | 'ROL', asOfD
 }
 
 async function syncRolleyStakeStatusNotifications() {
+  if (!ROLLEY_ADMIN_KEY) {
+    return { scanned: 0, created: 0, failed: 0, skipped: true };
+  }
+
   const asOfDate = new Date().toISOString().slice(0, 10);
   const assets: Array<'USD' | 'USDC' | 'ROL'> = ['USD', 'USDC', 'ROL'];
   let scanned = 0;

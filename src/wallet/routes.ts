@@ -701,6 +701,20 @@ const syncWalletAndTransactions = async (userId: string, wallet: { id: string; a
   return 0;
 };
 
+const syncWalletBalanceOnly = async (wallet: { id: string; address: string; blockchain: string }) => {
+  if (wallet.blockchain === 'MOVEMENT') {
+    await syncMovementBalance(wallet.id, wallet.address);
+    return 0;
+  }
+
+  if (wallet.blockchain === 'SOLANA') {
+    await syncSolanaBalance(wallet.id, wallet.address);
+    return 0;
+  }
+
+  return 0;
+};
+
 const trimWalletRefreshState = () => {
   const now = Date.now();
   for (const [key, state] of walletRefreshStateByUser.entries()) {
@@ -712,7 +726,8 @@ const trimWalletRefreshState = () => {
 
 const refreshWalletOverviewForUser = async (
   userId: string,
-  wallets: Array<{ id: string; address: string; blockchain: string }>
+  wallets: Array<{ id: string; address: string; blockchain: string }>,
+  options?: { includeTransactions?: boolean }
 ) => {
   trimWalletRefreshState();
   const now = Date.now();
@@ -734,10 +749,13 @@ const refreshWalletOverviewForUser = async (
   }
 
   const state = existing || { lastCompletedAt: 0, inFlight: null as Promise<number> | null };
+  const includeTransactions = options?.includeTransactions === true;
   const refreshPromise = Promise.all(
     wallets.map(async (wallet) => {
       try {
-        return await syncWalletAndTransactions(userId, wallet);
+        return includeTransactions
+          ? await syncWalletAndTransactions(userId, wallet)
+          : await syncWalletBalanceOnly(wallet);
       } catch (error) {
         logger.warn('Wallet refresh failed for wallet', {
           userId,
@@ -938,23 +956,51 @@ router.get('/overview', async (req: Request, res: Response) => {
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const refresh = req.query.refresh === '1';
+    const awaitRefresh = req.query.await_refresh === '1';
+    const refreshWithTransactions = req.query.refresh_transactions === '1';
 
     const { wallets } = await getWalletBalancesPayload(userId, {
       includeMovementIndexerFallback: false,
     });
 
     if (refresh && wallets.length > 0) {
-      const refreshResult = await refreshWalletOverviewForUser(userId, wallets);
-      logger.info('Wallet overview refreshed', {
-        userId,
-        walletCount: wallets.length,
-        indexedTransactions: refreshResult.indexedTransactions,
-        mode: refreshResult.mode,
-      });
+      if (awaitRefresh) {
+        const refreshResult = await refreshWalletOverviewForUser(userId, wallets, {
+          includeTransactions: refreshWithTransactions,
+        });
+        logger.info('Wallet overview refreshed', {
+          userId,
+          walletCount: wallets.length,
+          indexedTransactions: refreshResult.indexedTransactions,
+          mode: refreshResult.mode,
+          includeTransactions: refreshWithTransactions,
+        });
+      } else {
+        void refreshWalletOverviewForUser(userId, wallets, {
+          includeTransactions: refreshWithTransactions,
+        })
+          .then((refreshResult) => {
+            logger.info('Wallet overview refresh queued', {
+              userId,
+              walletCount: wallets.length,
+              indexedTransactions: refreshResult.indexedTransactions,
+              mode: refreshResult.mode,
+              includeTransactions: refreshWithTransactions,
+            });
+          })
+          .catch((error) => {
+            logger.warn('Wallet overview queued refresh failed', {
+              userId,
+              walletCount: wallets.length,
+              includeTransactions: refreshWithTransactions,
+              error,
+            });
+          });
+      }
     }
 
     const { balances, wallets: refreshedWallets } = await getWalletBalancesPayload(userId, {
-      includeMovementIndexerFallback: refresh,
+      includeMovementIndexerFallback: false,
     });
     const walletIds = refreshedWallets.map((wallet) => wallet.id);
     const { transactions, total } =
