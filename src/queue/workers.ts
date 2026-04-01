@@ -16,6 +16,18 @@ const redisConfig = getRedisConfig();
 const ROAST_SURVIVAL_REWARD_RAW = BigInt(10000); // 0.0001 ROL with 8 decimals
 const ROAST_SURVIVAL_CYCLE_HOURS = 24;
 const ROAST_REWARD_EVERY_CYCLES = 7;
+const QUEUE_WORKER_CONCURRENCY = Math.max(
+  1,
+  Number.parseInt(process.env.QUEUE_WORKER_CONCURRENCY || '5', 10)
+);
+const QUEUE_WORKER_RATE_LIMIT_MAX = Math.max(
+  0,
+  Number.parseInt(process.env.QUEUE_WORKER_RATE_LIMIT_MAX || '0', 10)
+);
+const QUEUE_WORKER_RATE_LIMIT_DURATION_MS = Math.max(
+  0,
+  Number.parseInt(process.env.QUEUE_WORKER_RATE_LIMIT_DURATION_MS || '0', 10)
+);
 
 let postExpirationWorker: Worker | null = null;
 
@@ -219,10 +231,26 @@ export async function setupQueueWorkers(): Promise<void> {
     },
     {
       connection: redisConfig,
-      concurrency: 5,
+      concurrency: QUEUE_WORKER_CONCURRENCY,
+      limiter:
+        QUEUE_WORKER_RATE_LIMIT_MAX > 0 && QUEUE_WORKER_RATE_LIMIT_DURATION_MS > 0
+          ? {
+              max: QUEUE_WORKER_RATE_LIMIT_MAX,
+              duration: QUEUE_WORKER_RATE_LIMIT_DURATION_MS,
+            }
+          : undefined,
     } as WorkerOptions
   );
 
   registerWorkerEvents(postExpirationWorker);
-  logger.info('Queue workers initialized');
+  logger.info('Queue workers initialized', {
+    concurrency: QUEUE_WORKER_CONCURRENCY,
+    limiter:
+      QUEUE_WORKER_RATE_LIMIT_MAX > 0 && QUEUE_WORKER_RATE_LIMIT_DURATION_MS > 0
+        ? {
+            max: QUEUE_WORKER_RATE_LIMIT_MAX,
+            durationMs: QUEUE_WORKER_RATE_LIMIT_DURATION_MS,
+          }
+        : null,
+  });
 }

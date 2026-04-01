@@ -3,6 +3,16 @@ import { logger } from '../utils/logger';
 import { getRedisConfig } from './redisConfig';
 
 const redisConfig = getRedisConfig();
+const QUEUE_JOB_ATTEMPTS = Math.max(1, Number.parseInt(process.env.QUEUE_JOB_ATTEMPTS || '3', 10));
+const QUEUE_JOB_BACKOFF_MS = Math.max(0, Number.parseInt(process.env.QUEUE_JOB_BACKOFF_MS || '5000', 10));
+const QUEUE_JOB_REMOVE_ON_COMPLETE = Math.max(
+  100,
+  Number.parseInt(process.env.QUEUE_JOB_REMOVE_ON_COMPLETE || '1000', 10)
+);
+const QUEUE_JOB_REMOVE_ON_FAIL = Math.max(
+  100,
+  Number.parseInt(process.env.QUEUE_JOB_REMOVE_ON_FAIL || '5000', 10)
+);
 
 let postExpirationQueue: Queue | null = null;
 let queueDisabledReason: string | null = null;
@@ -34,6 +44,18 @@ export function getPostExpirationQueue(): Queue | null {
   if (!postExpirationQueue) {
     postExpirationQueue = new Queue('post-expiration', {
       connection: redisConfig,
+      defaultJobOptions: {
+        attempts: QUEUE_JOB_ATTEMPTS,
+        backoff:
+          QUEUE_JOB_BACKOFF_MS > 0
+            ? {
+                type: 'exponential',
+                delay: QUEUE_JOB_BACKOFF_MS,
+              }
+            : undefined,
+        removeOnComplete: { count: QUEUE_JOB_REMOVE_ON_COMPLETE },
+        removeOnFail: { count: QUEUE_JOB_REMOVE_ON_FAIL },
+      },
     });
 
     postExpirationQueue.on('error', (error) => {
@@ -73,11 +95,14 @@ export async function addPostExpirationJob(postId: string, expiresAt: Date): Pro
       { postId },
       {
         delay,
-        attempts: 3,
-        backoff: {
-          type: 'exponential',
-          delay: 5000,
-        },
+        attempts: QUEUE_JOB_ATTEMPTS,
+        backoff:
+          QUEUE_JOB_BACKOFF_MS > 0
+            ? {
+                type: 'exponential',
+                delay: QUEUE_JOB_BACKOFF_MS,
+              }
+            : undefined,
       }
     );
 

@@ -11,7 +11,9 @@
     "prisma:migrate": "prisma migrate dev",
     "prisma:studio": "prisma studio",
     "lint": "eslint src --ext .ts",
-    "format": "prettier --write \"src/**/*.ts\""
+    "format": "prettier --write \"src/**/*.ts\"",
+    "loadtest:smoke": "k6 run load-tests/smoke.js",
+    "loadtest:spike": "k6 run load-tests/spike.js"
   },
   "keywords": [
     "banter",

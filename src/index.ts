@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
@@ -30,11 +31,13 @@ import pcaRoutes from './pca/routes';
 import pointsRoutes from './points/routes';
 import adsRoutes from './ads/routes';
 import messageRoutes from './message/routes';
+import { buildPrismaDatasourceUrl, getPerformanceConfig } from './config/performance';
 
 dotenv.config();
 
 const app = express();
 const httpServer = createServer(app);
+const performance = getPerformanceConfig();
 const io = new Server(httpServer, {
   cors: {
     origin: process.env.FRONTEND_URL || process.env.API_URL || '*',
@@ -43,12 +46,35 @@ const io = new Server(httpServer, {
 });
 
 // Initialize Prisma Client
-export const prisma = new PrismaClient({
+const prismaDatasourceUrl = buildPrismaDatasourceUrl();
+const prismaConfig: ConstructorParameters<typeof PrismaClient>[0] = {
   log: process.env.NODE_ENV === 'development' ? ['query', 'error', 'warn'] : ['error'],
-});
+};
+if (prismaDatasourceUrl) {
+  prismaConfig.datasources = {
+    db: { url: prismaDatasourceUrl },
+  };
+}
+export const prisma = new PrismaClient(prismaConfig);
 
 // Middleware
 app.use(helmet());
+app.set('trust proxy', 1);
+
+const apiLimiter = rateLimit({
+  windowMs: performance.apiRateLimitWindowMs,
+  max: performance.apiRateLimitMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skip: (req) => req.path === '/health' || req.path === '/api/health',
+});
+const authLimiter = rateLimit({
+  windowMs: performance.authRateLimitWindowMs,
+  max: performance.authRateLimitMax,
+  standardHeaders: true,
+  legacyHeaders: false,
+  skipSuccessfulRequests: true,
+});
 const allowedOrigins = [
   process.env.FRONTEND_URL,
   process.env.ADMIN_FRONTEND_URL,
@@ -70,6 +96,9 @@ app.use(
     credentials: true,
   })
 );
+app.use('/api', apiLimiter);
+app.use('/api/auth/privy/verify', authLimiter);
+app.use('/api/auth/register', authLimiter);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -128,6 +157,8 @@ app.use('/api/admin', adminRoutes);
 app.use(errorHandler);
 
 function shouldRunQueueWorkers() {
+  const appRole = (process.env.APP_ROLE || 'all').trim().toLowerCase();
+  if (appRole === 'api') return false;
   return process.env.RUN_QUEUE_WORKERS !== '0' && process.env.DISABLE_BACKGROUND_QUEUE !== '1';
 }
 
@@ -148,6 +179,8 @@ async function bootstrap() {
     logger.info(`🌐 Domain: ${process.env.DOMAIN || 'localhost'}`);
     logger.info(`🔗 API URL: ${process.env.API_URL || `http://localhost:${PORT}`}`);
     logger.info(`🧵 Queue workers: ${shouldRunQueueWorkers() ? 'enabled' : 'disabled'}`);
+    logger.info(`⚙️ DB pool: limit=${performance.dbConnectionLimit}, timeout=${performance.dbPoolTimeoutSeconds}s, pgbouncer=${performance.dbUsePgBouncer ? 'on' : 'off'}`);
+    logger.info(`🛡️ Rate limits: api=${performance.apiRateLimitMax}/${Math.round(performance.apiRateLimitWindowMs / 1000)}s, auth=${performance.authRateLimitMax}/${Math.round(performance.authRateLimitWindowMs / 1000)}s`);
   });
 }
 

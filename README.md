@@ -131,6 +131,32 @@ WebSocket events:
 
 See `env.example` for all required environment variables.
 
+## Crowd Readiness
+
+The backend includes production controls for high-traffic windows:
+
+- Database pool tuning via `DB_CONNECTION_LIMIT` and `DB_POOL_TIMEOUT_SEC`.
+- Optional PgBouncer mode via `DB_USE_PGBOUNCER=1`.
+- Global API and auth-specific rate limits (`API_RATE_LIMIT_*`, `AUTH_RATE_LIMIT_*`).
+- Wallet overview short-TTL response cache (`WALLET_OVERVIEW_CACHE_*`).
+- Queue backpressure settings (`QUEUE_WORKER_*`, `QUEUE_JOB_*`).
+- Role-based queue execution with `APP_ROLE=api|all` (set `api` on replica nodes that should not run workers).
+
+### Load Testing
+
+Use k6 against your deployed URL:
+
+```bash
+BASE_URL=https://sportbanter.online npm run loadtest:smoke
+BASE_URL=https://sportbanter.online npm run loadtest:spike
+```
+
+For authenticated smoke tests:
+
+```bash
+BASE_URL=https://sportbanter.online AUTH_TOKEN=<jwt> npm run loadtest:smoke
+```
+
 ## Deployment
 
 The backend is designed to run on a Contabo VPS (Ubuntu 24.04) at `62.171.136.64`.

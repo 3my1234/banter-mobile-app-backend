@@ -21,6 +21,14 @@ const WALLET_OVERVIEW_REFRESH_COOLDOWN_MS = Number.parseInt(
   process.env.WALLET_OVERVIEW_REFRESH_COOLDOWN_MS || '45000',
   10
 );
+const WALLET_OVERVIEW_CACHE_TTL_MS = Number.parseInt(
+  process.env.WALLET_OVERVIEW_CACHE_TTL_MS || '5000',
+  10
+);
+const WALLET_OVERVIEW_CACHE_MAX_ENTRIES = Number.parseInt(
+  process.env.WALLET_OVERVIEW_CACHE_MAX_ENTRIES || '1000',
+  10
+);
 const WALLET_REFRESH_STATE_TTL_MS = 15 * 60 * 1000;
 const walletRefreshStateByUser = new Map<
   string,
@@ -29,6 +37,66 @@ const walletRefreshStateByUser = new Map<
     inFlight: Promise<number> | null;
   }
 >();
+const walletOverviewCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    payload: Record<string, unknown>;
+  }
+>();
+
+const walletOverviewCacheKey = (userId: string, page: number, limit: number) =>
+  `${userId}:${page}:${limit}`;
+
+const clonePayload = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
+
+const trimWalletOverviewCache = () => {
+  const now = Date.now();
+  for (const [key, entry] of walletOverviewCache.entries()) {
+    if (entry.expiresAt <= now) {
+      walletOverviewCache.delete(key);
+    }
+  }
+  const overflow = walletOverviewCache.size - WALLET_OVERVIEW_CACHE_MAX_ENTRIES;
+  if (overflow <= 0) return;
+  const keys = Array.from(walletOverviewCache.keys()).slice(0, overflow);
+  keys.forEach((key) => walletOverviewCache.delete(key));
+};
+
+const getWalletOverviewCache = (userId: string, page: number, limit: number) => {
+  trimWalletOverviewCache();
+  const key = walletOverviewCacheKey(userId, page, limit);
+  const cached = walletOverviewCache.get(key);
+  if (!cached || cached.expiresAt <= Date.now()) {
+    return null;
+  }
+  return clonePayload(cached.payload);
+};
+
+const setWalletOverviewCache = (
+  userId: string,
+  page: number,
+  limit: number,
+  payload: Record<string, unknown>
+) => {
+  trimWalletOverviewCache();
+  walletOverviewCache.set(walletOverviewCacheKey(userId, page, limit), {
+    expiresAt: Date.now() + WALLET_OVERVIEW_CACHE_TTL_MS,
+    payload: clonePayload(payload),
+  });
+};
+
+const invalidateWalletOverviewCache = (userId?: string) => {
+  if (!userId) {
+    walletOverviewCache.clear();
+    return;
+  }
+  for (const key of walletOverviewCache.keys()) {
+    if (key.startsWith(`${userId}:`)) {
+      walletOverviewCache.delete(key);
+    }
+  }
+};
 const toRawBigInt = (value: string | null | undefined) => {
   try {
     return BigInt(value || '0');
@@ -842,6 +910,7 @@ router.post('/sync/:walletId', async (req: Request, res: Response) => {
     }
 
     await syncWalletAndTransactions(userId, wallet);
+    invalidateWalletOverviewCache(userId);
 
     // Get updated balances
     const updatedWallet = await prisma.wallet.findUnique({
@@ -959,6 +1028,15 @@ router.get('/overview', async (req: Request, res: Response) => {
     const awaitRefresh = req.query.await_refresh === '1';
     const refreshWithTransactions = req.query.refresh_transactions === '1';
 
+    if (!refresh) {
+      const cached = getWalletOverviewCache(userId, page, limit);
+      if (cached) {
+        return res.json(cached);
+      }
+    } else {
+      invalidateWalletOverviewCache(userId);
+    }
+
     const { wallets } = await getWalletBalancesPayload(userId, {
       includeMovementIndexerFallback: false,
     });
@@ -1008,7 +1086,7 @@ router.get('/overview', async (req: Request, res: Response) => {
         ? await getStoredTransactionsPayload(walletIds, page, limit)
         : { transactions: [], total: 0 };
 
-    return res.json({
+    const payload = {
       success: true,
       balances,
       wallets: refreshedWallets,
@@ -1019,7 +1097,13 @@ router.get('/overview', async (req: Request, res: Response) => {
         total,
         totalPages: Math.ceil(total / limit),
       },
-    });
+    };
+
+    if (!refresh) {
+      setWalletOverviewCache(userId, page, limit, payload);
+    }
+
+    return res.json(payload);
   } catch (error) {
     logger.error('Get wallet overview error', { error });
     if (error instanceof AppError) {
