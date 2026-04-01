@@ -747,9 +747,13 @@ const collectSolanaIndexerTransactions = async (wallet: { id: string; address: s
   }));
 };
 
-const syncWalletAndTransactions = async (userId: string, wallet: { id: string; address: string; blockchain: string }) => {
+const syncWalletAndTransactions = async (
+  userId: string,
+  wallet: { id: string; address: string; blockchain: string },
+  options?: { force?: boolean }
+) => {
   if (wallet.blockchain === 'MOVEMENT') {
-    await syncMovementBalance(wallet.id, wallet.address);
+    await syncMovementBalance(wallet.id, wallet.address, { force: options?.force === true });
     const movementTxItems = await collectMovementIndexerTransactions(wallet);
     if (movementTxItems.length > 0) {
       await upsertIndexerTransactions(userId, movementTxItems);
@@ -758,7 +762,7 @@ const syncWalletAndTransactions = async (userId: string, wallet: { id: string; a
   }
 
   if (wallet.blockchain === 'SOLANA') {
-    await syncSolanaBalance(wallet.id, wallet.address);
+    await syncSolanaBalance(wallet.id, wallet.address, { force: options?.force === true });
     const solanaTxItems = await collectSolanaIndexerTransactions(wallet);
     if (solanaTxItems.length > 0) {
       await upsertIndexerTransactions(userId, solanaTxItems);
@@ -909,7 +913,7 @@ router.post('/sync/:walletId', async (req: Request, res: Response) => {
       throw new AppError('Wallet not found', 404);
     }
 
-    await syncWalletAndTransactions(userId, wallet);
+    await syncWalletAndTransactions(userId, wallet, { force: true });
     invalidateWalletOverviewCache(userId);
 
     // Get updated balances

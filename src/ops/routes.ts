@@ -13,6 +13,10 @@ const OPS_WALLET_INDEXING_MIN_INTERVAL_MS = Math.max(
   30_000,
   Number.parseInt(process.env.OPS_WALLET_INDEXING_MIN_INTERVAL_MS || '300000', 10)
 );
+const DISABLE_OPS_WALLET_INDEXING = process.env.DISABLE_OPS_WALLET_INDEXING === '1';
+const OPS_WALLET_INDEXING_INCLUDE_TX = process.env.OPS_WALLET_INDEXING_INCLUDE_TX === '1';
+const OPS_WALLET_INDEXING_INCLUDE_ROLLEY =
+  process.env.OPS_WALLET_INDEXING_INCLUDE_ROLLEY === '1';
 let lastWalletIndexingRunAt = 0;
 
 const MOVEMENT_INDEXER_URL =
@@ -746,6 +750,15 @@ router.post('/cron/wallet-indexing', async (req: Request, res: Response): Promis
   try {
     assertCronAuthorized(req);
 
+    if (DISABLE_OPS_WALLET_INDEXING) {
+      return res.json({
+        success: true,
+        skipped: true,
+        reason: 'disabled',
+        timestamp: new Date().toISOString(),
+      });
+    }
+
     const now = Date.now();
     const elapsedMs = now - lastWalletIndexingRunAt;
     if (lastWalletIndexingRunAt > 0 && elapsedMs < OPS_WALLET_INDEXING_MIN_INTERVAL_MS) {
@@ -764,9 +777,15 @@ router.post('/cron/wallet-indexing', async (req: Request, res: Response): Promis
     lastWalletIndexingRunAt = now;
 
     const balanceSummary = await syncBalancesForAllWallets();
-    const movementTxSummary = await syncMovementIndexerTransactionsForAllWallets();
-    const solanaTxSummary = await syncSolanaIndexerTransactionsForAllWallets();
-    const rolleyStakeSummary = await syncRolleyStakeStatusNotifications();
+    const movementTxSummary = OPS_WALLET_INDEXING_INCLUDE_TX
+      ? await syncMovementIndexerTransactionsForAllWallets()
+      : { skipped: true };
+    const solanaTxSummary = OPS_WALLET_INDEXING_INCLUDE_TX
+      ? await syncSolanaIndexerTransactionsForAllWallets()
+      : { skipped: true };
+    const rolleyStakeSummary = OPS_WALLET_INDEXING_INCLUDE_ROLLEY
+      ? await syncRolleyStakeStatusNotifications()
+      : { skipped: true };
 
     return res.json({
       success: true,

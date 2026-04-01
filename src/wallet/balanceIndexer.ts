@@ -14,6 +14,28 @@ const MOVEMENT_ROL_ADDRESS = process.env.MOVEMENT_ROL_ADDRESS || '';
 // Solana Configuration
 const SOLANA_RPC_URL = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
 const SOLANA_USDC_MINT = process.env.SOLANA_USDC_MINT || 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const WALLET_BALANCE_SYNC_MIN_INTERVAL_MS = Math.max(
+  0,
+  Number.parseInt(process.env.WALLET_BALANCE_SYNC_MIN_INTERVAL_MS || '600000', 10)
+);
+
+async function shouldSkipBalanceSync(walletId: string, force = false) {
+  if (force || WALLET_BALANCE_SYNC_MIN_INTERVAL_MS <= 0) {
+    return false;
+  }
+
+  const latest = await prisma.walletBalance.aggregate({
+    where: { walletId },
+    _max: { lastUpdated: true },
+  });
+
+  const lastUpdated = latest._max.lastUpdated;
+  if (!lastUpdated) {
+    return false;
+  }
+
+  return Date.now() - lastUpdated.getTime() < WALLET_BALANCE_SYNC_MIN_INTERVAL_MS;
+}
 
 /**
  * Get Movement wallet balance from blockchain
@@ -270,7 +292,8 @@ async function getSolanaBalance(
  */
 export async function syncMovementBalance(
   walletId: string,
-  walletAddress: string
+  walletAddress: string,
+  options?: { force?: boolean }
 ): Promise<void> {
   try {
     const wallet = await prisma.wallet.findUnique({
@@ -279,6 +302,10 @@ export async function syncMovementBalance(
 
     if (!wallet || wallet.blockchain !== 'MOVEMENT') {
       throw new Error('Invalid Movement wallet');
+    }
+
+    if (await shouldSkipBalanceSync(walletId, options?.force === true)) {
+      return;
     }
 
     // Sync native MOVE token
@@ -371,7 +398,8 @@ export async function syncMovementBalance(
  */
 export async function syncSolanaBalance(
   walletId: string,
-  walletAddress: string
+  walletAddress: string,
+  options?: { force?: boolean }
 ): Promise<void> {
   try {
     const wallet = await prisma.wallet.findUnique({
@@ -380,6 +408,10 @@ export async function syncSolanaBalance(
 
     if (!wallet || wallet.blockchain !== 'SOLANA') {
       throw new Error('Invalid Solana wallet');
+    }
+
+    if (await shouldSkipBalanceSync(walletId, options?.force === true)) {
+      return;
     }
 
     // Sync native SOL
