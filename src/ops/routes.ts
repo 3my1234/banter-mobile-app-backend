@@ -9,6 +9,11 @@ import { getRolleyServiceBaseUrl } from '../points/service';
 import { Connection, PublicKey } from '@solana/web3.js';
 
 const router = Router();
+const OPS_WALLET_INDEXING_MIN_INTERVAL_MS = Math.max(
+  30_000,
+  Number.parseInt(process.env.OPS_WALLET_INDEXING_MIN_INTERVAL_MS || '300000', 10)
+);
+let lastWalletIndexingRunAt = 0;
 
 const MOVEMENT_INDEXER_URL =
   process.env.MOVEMENT_INDEXER_URL || 'https://indexer.testnet.movementnetwork.xyz/v1/graphql';
@@ -740,6 +745,23 @@ async function syncRolleyStakeStatusNotifications() {
 router.post('/cron/wallet-indexing', async (req: Request, res: Response): Promise<Response> => {
   try {
     assertCronAuthorized(req);
+
+    const now = Date.now();
+    const elapsedMs = now - lastWalletIndexingRunAt;
+    if (lastWalletIndexingRunAt > 0 && elapsedMs < OPS_WALLET_INDEXING_MIN_INTERVAL_MS) {
+      return res.json({
+        success: true,
+        skipped: true,
+        reason: 'cooldown',
+        elapsedMs,
+        minIntervalMs: OPS_WALLET_INDEXING_MIN_INTERVAL_MS,
+        nextAllowedAt: new Date(
+          lastWalletIndexingRunAt + OPS_WALLET_INDEXING_MIN_INTERVAL_MS
+        ).toISOString(),
+        timestamp: new Date().toISOString(),
+      });
+    }
+    lastWalletIndexingRunAt = now;
 
     const balanceSummary = await syncBalancesForAllWallets();
     const movementTxSummary = await syncMovementIndexerTransactionsForAllWallets();
