@@ -6,6 +6,7 @@ import { prisma } from '../index';
 import { AppError } from '../utils/errorHandler';
 import { logger } from '../utils/logger';
 import { adminAuthMiddleware, generateAdminToken } from './auth';
+import { hardDeletePost } from '../post/service';
 
 const router = Router();
 
@@ -144,6 +145,63 @@ const parseIntField = (value: any, fallback: number) => {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(1, Math.floor(parsed));
+};
+
+const ACTIVITY_LIMIT_MAX = 200;
+const ACTIVITY_SOURCE_LIMIT_MAX = 240;
+
+type ActivityActor = {
+  id: string;
+  displayName: string | null;
+  username: string | null;
+  email: string | null;
+};
+
+type ActivityItem = {
+  id: string;
+  activityType: string;
+  createdAt: Date;
+  user: ActivityActor | null;
+  title: string;
+  description: string;
+  metadata: Record<string, unknown>;
+};
+
+const parseDateQuery = (value: unknown) => {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new AppError('Invalid before date. Use ISO date-time format.', 400);
+  }
+  return parsed;
+};
+
+const truncateText = (value: unknown, max = 140) => {
+  const text = typeof value === 'string' ? value.trim() : '';
+  if (!text) return '';
+  if (text.length <= max) return text;
+  return `${text.slice(0, max - 3)}...`;
+};
+
+const shortId = (value?: string | null) => {
+  if (!value) return '';
+  if (value.length <= 8) return value;
+  return value.slice(0, 8);
+};
+
+const toActivityActor = (user?: {
+  id: string;
+  displayName: string | null;
+  username: string | null;
+  email: string | null;
+} | null): ActivityActor | null => {
+  if (!user) return null;
+  return {
+    id: user.id,
+    displayName: user.displayName,
+    username: user.username,
+    email: user.email,
+  };
 };
 
 /**
@@ -435,6 +493,334 @@ router.get('/overview', async (_req: Request, res: Response): Promise<void> => {
 });
 
 /**
+ * GET /api/admin/activity
+ * Aggregated cross-user activity feed for admin monitoring.
+ */
+router.get('/activity', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const rawLimit = Number(req.query.limit || 80);
+    const limit = Math.min(ACTIVITY_LIMIT_MAX, Math.max(1, Math.floor(rawLimit || 80)));
+    const before = parseDateQuery(req.query.before);
+    const whereCreatedAt: Prisma.DateTimeFilter | undefined = before ? { lt: before } : undefined;
+    const where = whereCreatedAt ? { createdAt: whereCreatedAt } : {};
+    const perSourceLimit = Math.min(ACTIVITY_SOURCE_LIMIT_MAX, Math.max(20, limit));
+
+    const [
+      postsRes,
+      commentsRes,
+      votesRes,
+      reactionsRes,
+      paymentsRes,
+      walletTransactionsRes,
+      notificationsRes,
+      directMessagesRes,
+      followsRes,
+    ] = await Promise.allSettled([
+      prisma.post.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: perSourceLimit,
+        select: {
+          id: true,
+          content: true,
+          mediaType: true,
+          status: true,
+          isRoast: true,
+          createdAt: true,
+          user: { select: { id: true, displayName: true, username: true, email: true } },
+        },
+      }),
+      prisma.comment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: perSourceLimit,
+        select: {
+          id: true,
+          postId: true,
+          parentId: true,
+          content: true,
+          createdAt: true,
+          user: { select: { id: true, displayName: true, username: true, email: true } },
+        },
+      }),
+      prisma.vote.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: perSourceLimit,
+        select: {
+          id: true,
+          postId: true,
+          voteType: true,
+          createdAt: true,
+          user: { select: { id: true, displayName: true, username: true, email: true } },
+        },
+      }),
+      prisma.reaction.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: perSourceLimit,
+        select: {
+          id: true,
+          postId: true,
+          type: true,
+          createdAt: true,
+          user: { select: { id: true, displayName: true, username: true, email: true } },
+        },
+      }),
+      prisma.payment.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: perSourceLimit,
+        select: {
+          id: true,
+          paymentType: true,
+          chain: true,
+          amount: true,
+          currency: true,
+          status: true,
+          txHash: true,
+          createdAt: true,
+          user: { select: { id: true, displayName: true, username: true, email: true } },
+        },
+      }),
+      prisma.walletTransaction.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: perSourceLimit,
+        select: {
+          id: true,
+          txHash: true,
+          txType: true,
+          tokenSymbol: true,
+          amount: true,
+          status: true,
+          createdAt: true,
+          wallet: {
+            select: {
+              user: { select: { id: true, displayName: true, username: true, email: true } },
+            },
+          },
+        },
+      }),
+      prisma.notification.findMany({
+        where: {
+          ...(whereCreatedAt ? { createdAt: whereCreatedAt } : {}),
+          type: { not: 'DAILY_ROL' },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: perSourceLimit,
+        select: {
+          id: true,
+          type: true,
+          title: true,
+          body: true,
+          readAt: true,
+          createdAt: true,
+          user: { select: { id: true, displayName: true, username: true, email: true } },
+        },
+      }),
+      prisma.directMessage.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: perSourceLimit,
+        select: {
+          id: true,
+          body: true,
+          conversationId: true,
+          createdAt: true,
+          sender: { select: { id: true, displayName: true, username: true, email: true } },
+        },
+      }),
+      prisma.follow.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: perSourceLimit,
+        select: {
+          id: true,
+          createdAt: true,
+          follower: { select: { id: true, displayName: true, username: true, email: true } },
+          following: { select: { id: true, displayName: true, username: true, email: true } },
+        },
+      }),
+    ]);
+
+    const sourceFailures: string[] = [];
+    const unwrapSource = <T>(source: string, result: PromiseSettledResult<T>, fallback: T): T => {
+      if (result.status === 'fulfilled') return result.value;
+      const reason =
+        result.reason instanceof Error
+          ? result.reason.message
+          : String(result.reason || 'unknown error');
+      logger.warn('Admin activity source failed', { source, reason });
+      sourceFailures.push(source);
+      return fallback;
+    };
+
+    const posts = unwrapSource('posts', postsRes, [] as any[]);
+    const comments = unwrapSource('comments', commentsRes, [] as any[]);
+    const votes = unwrapSource('votes', votesRes, [] as any[]);
+    const reactions = unwrapSource('reactions', reactionsRes, [] as any[]);
+    const payments = unwrapSource('payments', paymentsRes, [] as any[]);
+    const walletTransactions = unwrapSource('walletTransactions', walletTransactionsRes, [] as any[]);
+    const notifications = unwrapSource('notifications', notificationsRes, [] as any[]);
+    const directMessages = unwrapSource('directMessages', directMessagesRes, [] as any[]);
+    const follows = unwrapSource('follows', followsRes, [] as any[]);
+
+    const activities: ActivityItem[] = [
+      ...posts.map((post) => ({
+        id: `post:${post.id}`,
+        activityType: post.isRoast ? 'BANTER_POST_CREATED' : 'POST_CREATED',
+        createdAt: post.createdAt,
+        user: toActivityActor(post.user),
+        title: post.isRoast ? 'Banter video posted' : 'Post created',
+        description:
+          truncateText(post.content) ||
+          `${post.mediaType ? String(post.mediaType).toUpperCase() : 'TEXT'} post`,
+        metadata: {
+          postId: post.id,
+          isRoast: post.isRoast,
+          status: post.status,
+          mediaType: post.mediaType || null,
+        },
+      })),
+      ...comments.map((comment) => ({
+        id: `comment:${comment.id}`,
+        activityType: comment.parentId ? 'COMMENT_REPLY_CREATED' : 'COMMENT_CREATED',
+        createdAt: comment.createdAt,
+        user: toActivityActor(comment.user),
+        title: comment.parentId ? 'Comment reply created' : 'Comment created',
+        description: truncateText(comment.content) || `Comment on post ${shortId(comment.postId)}`,
+        metadata: {
+          commentId: comment.id,
+          postId: comment.postId,
+          parentId: comment.parentId,
+        },
+      })),
+      ...votes.map((vote) => ({
+        id: `vote:${vote.id}`,
+        activityType: 'POST_VOTE_CAST',
+        createdAt: vote.createdAt,
+        user: toActivityActor(vote.user),
+        title: 'Post vote cast',
+        description: `${vote.voteType} vote on post ${shortId(vote.postId)}`,
+        metadata: {
+          voteId: vote.id,
+          postId: vote.postId,
+          voteType: vote.voteType,
+        },
+      })),
+      ...reactions.map((reaction) => ({
+        id: `reaction:${reaction.id}`,
+        activityType: 'POST_REACTION_SET',
+        createdAt: reaction.createdAt,
+        user: toActivityActor(reaction.user),
+        title: 'Post reaction updated',
+        description: `${reaction.type} reaction on post ${shortId(reaction.postId)}`,
+        metadata: {
+          reactionId: reaction.id,
+          postId: reaction.postId,
+          reactionType: reaction.type,
+        },
+      })),
+      ...payments.map((payment) => ({
+        id: `payment:${payment.id}`,
+        activityType: 'PAYMENT_EVENT',
+        createdAt: payment.createdAt,
+        user: toActivityActor(payment.user),
+        title: `Payment ${String(payment.status).toLowerCase()}`,
+        description: `${payment.amount} ${payment.currency} via ${payment.chain}`,
+        metadata: {
+          paymentId: payment.id,
+          paymentType: payment.paymentType,
+          chain: payment.chain,
+          status: payment.status,
+          txHash: payment.txHash,
+        },
+      })),
+      ...walletTransactions.map((tx) => ({
+        id: `wallet_tx:${tx.id}`,
+        activityType: 'WALLET_TRANSACTION_SYNCED',
+        createdAt: tx.createdAt,
+        user: toActivityActor(tx.wallet?.user || null),
+        title: 'Wallet transaction indexed',
+        description: `${tx.txType} ${tx.amount} ${tx.tokenSymbol}`,
+        metadata: {
+          walletTransactionId: tx.id,
+          txHash: tx.txHash,
+          txType: tx.txType,
+          status: tx.status,
+          tokenSymbol: tx.tokenSymbol,
+          amount: tx.amount,
+        },
+      })),
+      ...notifications.map((notification) => ({
+        id: `notification:${notification.id}`,
+        activityType: 'NOTIFICATION_CREATED',
+        createdAt: notification.createdAt,
+        user: toActivityActor(notification.user),
+        title: notification.title || 'Notification created',
+        description: truncateText(notification.body) || `${notification.type} notification`,
+        metadata: {
+          notificationId: notification.id,
+          notificationType: notification.type,
+          readAt: notification.readAt,
+        },
+      })),
+      ...directMessages.map((message) => ({
+        id: `direct_message:${message.id}`,
+        activityType: 'DIRECT_MESSAGE_SENT',
+        createdAt: message.createdAt,
+        user: toActivityActor(message.sender),
+        title: 'Direct message sent',
+        description: truncateText(message.body) || `Conversation ${shortId(message.conversationId)}`,
+        metadata: {
+          messageId: message.id,
+          conversationId: message.conversationId,
+        },
+      })),
+      ...follows.map((follow) => ({
+        id: `follow:${follow.id}`,
+        activityType: 'USER_FOLLOWED',
+        createdAt: follow.createdAt,
+        user: toActivityActor(follow.follower),
+        title: 'User followed another user',
+        description: `${follow.follower.displayName || follow.follower.username || follow.follower.email || shortId(follow.follower.id)} followed ${follow.following.displayName || follow.following.username || follow.following.email || shortId(follow.following.id)}`,
+        metadata: {
+          followId: follow.id,
+          followerId: follow.follower.id,
+          followingId: follow.following.id,
+        },
+      })),
+    ];
+
+    const sorted = activities
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      .slice(0, limit);
+    const nextCursor = sorted.length >= limit ? sorted[sorted.length - 1]?.createdAt.toISOString() : null;
+
+    res.json({
+      success: true,
+      activities: serializeBigInts(sorted),
+      nextCursor,
+      returned: sorted.length,
+      warning:
+        sourceFailures.length > 0
+          ? `Partial activity data (${sourceFailures.join(', ')})`
+          : undefined,
+    });
+    return;
+  } catch (error) {
+    logger.error('Admin activity feed error', { error });
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({ success: false, message: error.message });
+      return;
+    }
+    res.status(500).json({ success: false, message: 'Failed to load admin activity feed' });
+    return;
+  }
+});
+
+/**
  * GET /api/admin/users
  */
 router.get('/users', async (req: Request, res: Response): Promise<void> => {
@@ -569,6 +955,66 @@ router.get('/users/:id', async (req: Request, res: Response): Promise<void> => {
       return;
     }
     res.status(500).json({ success: false, message: 'Failed to load user detail' });
+    return;
+  }
+});
+
+/**
+ * DELETE /api/admin/posts/:id
+ * Admin delete for normal posts
+ */
+router.delete('/posts/:id', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const postId = String(req.params.id || '').trim();
+    if (!postId) {
+      throw new AppError('Post id is required', 400);
+    }
+
+    const post = await prisma.post.findUnique({
+      where: { id: postId },
+      select: {
+        id: true,
+        isRoast: true,
+        repostOfId: true,
+        status: true,
+      },
+    });
+
+    if (!post) {
+      throw new AppError('Post not found', 404);
+    }
+
+    if (post.isRoast) {
+      throw new AppError('This endpoint only deletes normal posts', 400);
+    }
+
+    const deleted = await hardDeletePost(postId);
+    if (!deleted.deleted) {
+      throw new AppError('Post not found', 404);
+    }
+
+    try {
+      const { getIO } = await import('../websocket/socket');
+      getIO().emit('post-hidden', { postId });
+      if (post.repostOfId && typeof deleted.repostCount === 'number') {
+        getIO().emit('repost-update', {
+          postId: post.repostOfId,
+          repostCount: deleted.repostCount,
+        });
+      }
+    } catch (error) {
+      logger.warn('WebSocket not available for admin post-hidden event', { error, postId });
+    }
+
+    res.json({ success: true });
+    return;
+  } catch (error) {
+    logger.error('Admin delete post error', { error, postId: req.params.id });
+    if (error instanceof AppError) {
+      res.status(error.statusCode).json({ success: false, message: error.message });
+      return;
+    }
+    res.status(500).json({ success: false, message: 'Failed to delete post' });
     return;
   }
 });
