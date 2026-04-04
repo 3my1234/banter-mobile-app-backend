@@ -22,10 +22,29 @@ router.get('/replies/:commentId', async (req: Request, res: Response): Promise<R
 
     const parent = await prisma.comment.findUnique({
       where: { id: commentId },
+      include: {
+        post: {
+          select: {
+            id: true,
+            status: true,
+            isRoast: true,
+            expiresAt: true,
+          },
+        },
+      },
     });
 
     if (!parent) {
       return res.status(404).json({ success: false, message: 'Comment not found' });
+    }
+    if (
+      !parent.post ||
+      parent.post.status !== 'ACTIVE' ||
+      !parent.post.isRoast ||
+      !parent.post.expiresAt ||
+      parent.post.expiresAt <= new Date()
+    ) {
+      return res.status(404).json({ success: false, message: 'Post not found' });
     }
 
     const replies = await prisma.comment.findMany({
@@ -146,6 +165,9 @@ router.post('/', async (req: Request, res: Response): Promise<Response | void> =
 
     if (post.status !== 'ACTIVE') {
       return res.status(400).json({ success: false, message: 'Cannot comment on inactive post' });
+    }
+    if (!post.isRoast || !post.expiresAt || post.expiresAt <= new Date()) {
+      return res.status(404).json({ success: false, message: 'Post not found' });
     }
 
     let parent: { id: string; postId: string; parentId: string | null; userId: string } | null = null;
@@ -288,6 +310,9 @@ router.get('/:postId', async (req: Request, res: Response): Promise<Response | v
     });
 
     if (!post) {
+      return res.status(404).json({ success: false, message: 'Post not found' });
+    }
+    if (post.status !== 'ACTIVE' || !post.isRoast || !post.expiresAt || post.expiresAt <= new Date()) {
       return res.status(404).json({ success: false, message: 'Post not found' });
     }
 
@@ -518,6 +543,9 @@ router.post('/:commentId/reactions', jwtAuthMiddleware, async (req: Request, res
 
     if (comment.post?.status !== 'ACTIVE') {
       return res.status(400).json({ success: false, message: 'Cannot react to inactive post' });
+    }
+    if (!comment.post?.isRoast || !comment.post.expiresAt || comment.post.expiresAt <= new Date()) {
+      return res.status(404).json({ success: false, message: 'Post not found' });
     }
 
     const existing = await prisma.commentReaction.findUnique({

@@ -64,6 +64,9 @@ router.post('/', async (req: Request, res: Response) => {
     if (post.status !== 'ACTIVE') {
       throw new AppError('Post is no longer active', 400);
     }
+    if (!post.isRoast || !post.expiresAt || post.expiresAt <= new Date()) {
+      throw new AppError('Post not found', 404);
+    }
 
     if (post.userId === user.id) {
       throw new AppError("You can't vote on your own post.", 400);
@@ -81,8 +84,6 @@ router.post('/', async (req: Request, res: Response) => {
 
     let vote: VoteRecord;
     let voteCountChange = { stay: 0, drop: 0 };
-
-    const isPaidVote = !post.isRoast;
 
     if (existingVote) {
       // Update existing vote
@@ -109,41 +110,13 @@ router.post('/', async (req: Request, res: Response) => {
         voteCountChange = { stay: 1, drop: -1 };
       }
     } else {
-      if (isPaidVote && user.voteBalance <= 0) {
-        throw new AppError('You need vote credits to vote. Buy more in the Votes tab.', 402);
-      }
-
-      // Create new vote (decrement balance only for paid votes)
-      if (isPaidVote) {
-        vote = await prisma.$transaction(async (tx) => {
-          const created = await tx.vote.create({
-            data: {
-              postId,
-              userId: user.id,
-              voteType,
-            },
-          });
-
-          await tx.user.update({
-            where: { id: user.id },
-            data: {
-              voteBalance: {
-                decrement: 1,
-              },
-            },
-          });
-
-          return created;
-        });
-      } else {
-        vote = await prisma.vote.create({
-          data: {
-            postId,
-            userId: user.id,
-            voteType,
-          },
-        });
-      }
+      vote = await prisma.vote.create({
+        data: {
+          postId,
+          userId: user.id,
+          voteType,
+        },
+      });
 
       // Update vote counts
       if (voteType === 'STAY') {
@@ -214,6 +187,19 @@ router.post('/', async (req: Request, res: Response) => {
 router.get('/post/:postId', async (req: Request, res: Response) => {
   try {
     const postId = req.params.postId;
+    const post = await prisma.post.findFirst({
+      where: {
+        id: postId,
+        status: 'ACTIVE',
+        isRoast: true,
+        expiresAt: { gt: new Date() },
+      },
+      select: { id: true },
+    });
+
+    if (!post) {
+      throw new AppError('Post not found', 404);
+    }
 
     const votes = await prisma.vote.findMany({
       where: { postId },

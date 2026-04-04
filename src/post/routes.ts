@@ -76,7 +76,7 @@ router.post('/', async (req: Request, res: Response): Promise<Response | void> =
       throw new AppError('User not authenticated', 401);
     }
 
-    const { content, mediaUrl, mediaType, mediaItems, isRoast, tags, league } = req.body;
+    const { content, mediaUrl, mediaType, mediaItems, tags, league } = req.body;
 
     const normalizedMediaItems = normalizeMediaItems(mediaItems, mediaUrl, mediaType);
     const trimmedContent = typeof content === 'string' ? content.trim() : '';
@@ -86,13 +86,8 @@ router.post('/', async (req: Request, res: Response): Promise<Response | void> =
     if (normalizedMediaItems.length > 6) {
       throw new AppError('You can upload up to 6 images per post', 400);
     }
-    if (normalizedMediaItems.length > 1) {
-      if (isRoast === true) {
-        throw new AppError('Roast posts currently support only one media item', 400);
-      }
-      if (normalizedMediaItems.some((item) => item.type !== 'image')) {
-        throw new AppError('Multiple media uploads currently support images only', 400);
-      }
+    if (normalizedMediaItems.length > 1 && normalizedMediaItems.some((item) => item.type !== 'image')) {
+      throw new AppError('Multiple media uploads currently support images only', 400);
     }
 
     const primaryMedia = normalizedMediaItems[0] || null;
@@ -108,15 +103,9 @@ router.post('/', async (req: Request, res: Response): Promise<Response | void> =
       throw new AppError('User not found', 404);
     }
 
-    // Expiration:
-    // - Roasts expire in 24 hours
-    // - Normal posts never expire (set far-future timestamp)
+    // Banter-only mode: all created posts are banter and expire in 24 hours.
     const expiresAt = new Date();
-    if (isRoast === true) {
-      expiresAt.setHours(expiresAt.getHours() + 24);
-    } else {
-      expiresAt.setFullYear(expiresAt.getFullYear() + 100);
-    }
+    expiresAt.setHours(expiresAt.getHours() + 24);
 
     // Process tags - create or link tags
     const tagArray = Array.isArray(tags) ? tags : [];
@@ -145,7 +134,7 @@ router.post('/', async (req: Request, res: Response): Promise<Response | void> =
       }
     }
 
-    const normalizedContent = trimmedContent || (isRoast === true ? '[ROAST]' : '');
+    const normalizedContent = trimmedContent;
 
     const post = await prisma.post.create({
       data: {
@@ -154,7 +143,7 @@ router.post('/', async (req: Request, res: Response): Promise<Response | void> =
         mediaUrl: primaryMedia?.url || null,
         mediaType: primaryMedia?.type || null,
         mediaItems: normalizedMediaItems.length ? (normalizedMediaItems as any) : null,
-        isRoast: isRoast === true,
+        isRoast: true,
         tags: tagArray,
         league: league || null,
         expiresAt,
@@ -229,33 +218,20 @@ router.post('/', async (req: Request, res: Response): Promise<Response | void> =
 router.get('/', async (req: Request, res: Response): Promise<Response | void> => {
   try {
     const userId = req.user?.userId;
-    const feed = (req.query.feed as string) || 'forYou';
+    const requestedFeed = (req.query.feed as string) || 'hot';
+    const feed = requestedFeed === 'forYou' ? 'hot' : requestedFeed;
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 20;
     const skip = (page - 1) * limit;
 
-    // Build where clause based on feed type
-    const type = (req.query.type as string) || 'all';
+    // Banter-only mode: always return active, unexpired banter posts.
     let whereClause: any = {
       status: 'ACTIVE',
+      isRoast: true,
+      expiresAt: { gt: new Date() },
     };
 
-    if (type === 'posts') {
-      whereClause.isRoast = false;
-    } else if (type === 'banter') {
-      whereClause.isRoast = true;
-      whereClause.expiresAt = { gt: new Date() };
-    } else {
-      whereClause.OR = [
-        { isRoast: false },
-        {
-          isRoast: true,
-          expiresAt: { gt: new Date() },
-        },
-      ];
-    }
-
-    if (feed === 'following' && userId && type === 'banter') {
+    if (feed === 'following' && userId) {
       whereClause.AND = [
         {
           OR: [
@@ -265,13 +241,6 @@ router.get('/', async (req: Request, res: Response): Promise<Response | void> =>
           ],
         },
       ];
-    } else if (feed === 'following' && userId) {
-      const followedUserIds = await prisma.follow.findMany({
-        where: { followerId: userId },
-        select: { followingId: true },
-      });
-      const ids = followedUserIds.map((f) => f.followingId);
-      whereClause.userId = { in: ids.length ? ids : ['__none__'] };
     }
 
     // Order by logic
@@ -485,6 +454,12 @@ router.get('/:id', async (req: Request, res: Response): Promise<Response | void>
     if (!post) {
       throw new AppError('Post not found', 404);
     }
+    if (!post.isRoast || post.expiresAt <= new Date()) {
+      throw new AppError('Post not found', 404);
+    }
+    if (post.status !== 'ACTIVE') {
+      throw new AppError('Post is no longer active', 400);
+    }
 
     const reactionCounts = await prisma.reaction.groupBy({
       by: ['type'],
@@ -584,6 +559,9 @@ router.patch('/:id', jwtAuthMiddleware, async (req: Request, res: Response): Pro
 
     if (post.status !== 'ACTIVE') {
       throw new AppError('Cannot edit an inactive post', 400);
+    }
+    if (!post.isRoast) {
+      throw new AppError('Only banter posts can be edited', 400);
     }
 
     const updated = await prisma.post.update({
@@ -685,6 +663,12 @@ router.delete('/:id', jwtAuthMiddleware, async (req: Request, res: Response): Pr
     if (!post) {
       throw new AppError('Post not found', 404);
     }
+    if (!post.isRoast || post.expiresAt <= new Date()) {
+      throw new AppError('Post not found', 404);
+    }
+    if (post.status !== 'ACTIVE') {
+      throw new AppError('Post is no longer active', 400);
+    }
 
     if (post.userId !== userId) {
       throw new AppError('Not authorized to delete this post', 403);
@@ -733,6 +717,9 @@ router.post('/:id/share', async (req: Request, res: Response): Promise<Response 
     });
 
     if (!post) {
+      throw new AppError('Post not found', 404);
+    }
+    if (!post.isRoast || post.status !== 'ACTIVE' || !post.expiresAt || post.expiresAt <= new Date()) {
       throw new AppError('Post not found', 404);
     }
 
@@ -807,12 +794,12 @@ router.post('/:id/repost', jwtAuthMiddleware, async (req: Request, res: Response
       });
     }
 
-    const expiresAt = new Date();
-    if (original.isRoast) {
-      expiresAt.setHours(expiresAt.getHours() + 24);
-    } else {
-      expiresAt.setFullYear(expiresAt.getFullYear() + 100);
+    if (!original.isRoast || original.status !== 'ACTIVE' || original.expiresAt <= new Date()) {
+      throw new AppError('Only active banter posts can be reposted', 400);
     }
+
+    const expiresAt = new Date();
+    expiresAt.setHours(expiresAt.getHours() + 24);
 
     const created = await prisma.$transaction(async (tx) => {
       const repost = await tx.post.create({
@@ -821,7 +808,7 @@ router.post('/:id/repost', jwtAuthMiddleware, async (req: Request, res: Response
           content: comment || '',
           mediaUrl: null,
           mediaType: null,
-          isRoast: original.isRoast,
+          isRoast: true,
           tags: original.tags,
           league: original.league,
           expiresAt,

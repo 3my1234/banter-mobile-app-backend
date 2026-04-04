@@ -63,6 +63,9 @@ router.post('/', async (req: Request, res: Response) => {
     if (post.status !== 'ACTIVE') {
       throw new AppError('Cannot react to inactive post', 400);
     }
+    if (!post.isRoast || !post.expiresAt || post.expiresAt <= new Date()) {
+      throw new AppError('Post not found', 404);
+    }
 
     // Check if user already reacted
     const existingReaction = await prisma.reaction.findUnique({
