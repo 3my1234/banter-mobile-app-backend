@@ -1041,9 +1041,10 @@ router.get('/overview', async (req: Request, res: Response) => {
       invalidateWalletOverviewCache(userId);
     }
 
-    const { wallets } = await getWalletBalancesPayload(userId, {
+    const initialSnapshot = await getWalletBalancesPayload(userId, {
       includeMovementIndexerFallback: false,
     });
+    const { wallets } = initialSnapshot;
 
     if (refresh && wallets.length > 0) {
       if (awaitRefresh) {
@@ -1077,14 +1078,18 @@ router.get('/overview', async (req: Request, res: Response) => {
               includeTransactions: refreshWithTransactions,
               error,
             });
-          });
+        });
       }
     }
 
-    const { balances, wallets: refreshedWallets } = await getWalletBalancesPayload(userId, {
-      includeMovementIndexerFallback: false,
-    });
-    const walletIds = refreshedWallets.map((wallet) => wallet.id);
+    const overviewSnapshot =
+      refresh && awaitRefresh
+        ? await getWalletBalancesPayload(userId, {
+            includeMovementIndexerFallback: false,
+          })
+        : initialSnapshot;
+
+    const walletIds = overviewSnapshot.wallets.map((wallet) => wallet.id);
     const { transactions, total } =
       walletIds.length > 0
         ? await getStoredTransactionsPayload(walletIds, page, limit)
@@ -1092,8 +1097,8 @@ router.get('/overview', async (req: Request, res: Response) => {
 
     const payload = {
       success: true,
-      balances,
-      wallets: refreshedWallets,
+      balances: overviewSnapshot.balances,
+      wallets: overviewSnapshot.wallets,
       transactions,
       pagination: {
         page,

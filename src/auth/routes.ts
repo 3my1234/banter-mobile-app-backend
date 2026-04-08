@@ -92,6 +92,23 @@ const notifyPointsAward = async (input: {
   });
 };
 
+const queuePointsAwardNotification = (input: {
+  userId: string;
+  reference: string;
+  title: string;
+  body: string;
+  data: Record<string, string>;
+  type?: 'DAILY_POINTS' | 'SYSTEM';
+}) => {
+  void notifyPointsAward(input).catch((error) => {
+    logger.warn('Failed to enqueue points notification', {
+      userId: input.userId,
+      reference: input.reference,
+      error,
+    });
+  });
+};
+
 const pickPrimaryWalletsByChain = (
   wallets: Array<{
     address: string;
@@ -299,7 +316,7 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
     });
 
     if (dailyPointsAwarded) {
-      await notifyPointsAward({
+      queuePointsAwardNotification({
         userId: user.id,
         type: 'DAILY_POINTS',
         title: 'Daily Banter Points added',
@@ -311,7 +328,7 @@ router.post('/privy/verify', async (req: Request, res: Response): Promise<void> 
       });
     }
     if (earlyUserAwarded) {
-      await notifyPointsAward({
+      queuePointsAwardNotification({
         userId: user.id,
         title: 'Welcome bonus added',
         body: 'You received your one-time welcome Banter Points bonus. Open Profile > Banter Points to see how your points count toward the future airdrop.',
@@ -436,7 +453,7 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
       localDayStart: rewardResult.localDayStart.toISOString(),
     });
     if (rewardResult.awarded) {
-      await notifyPointsAward({
+      queuePointsAwardNotification({
         userId: user.id,
         type: 'DAILY_POINTS',
         title: 'Daily Banter Points added',
@@ -449,7 +466,7 @@ router.post('/login', async (req: Request, res: Response): Promise<void> => {
     }
     const earlyUserResult = await prisma.$transaction((tx) => awardEarlyUserPoints(tx, user));
     if (earlyUserResult.awarded) {
-      await notifyPointsAward({
+      queuePointsAwardNotification({
         userId: user.id,
         title: 'Welcome bonus added',
         body: 'You received your one-time welcome Banter Points bonus. Open Profile > Banter Points to see how your points count toward the future airdrop.',
@@ -584,7 +601,7 @@ router.post('/register', async (req: Request, res: Response): Promise<void> => {
 
     logger.info(`Created new user: ${user.id}`);
     if (earlyUserAwarded) {
-      await notifyPointsAward({
+      queuePointsAwardNotification({
         userId: user.id,
         title: 'Welcome bonus added',
         body: 'You received your one-time welcome Banter Points bonus. Open Profile > Banter Points to see how your points count toward the future airdrop.',
@@ -650,7 +667,7 @@ router.get('/me', jwtAuthMiddleware, async (req: Request, res: Response): Promis
     if (rewardResult.awarded) {
       effectiveBanterPointsRaw = user.banterPointsRaw + DAILY_BANTER_POINTS_RAW;
       effectiveLastDailyPointsAt = now;
-      await notifyPointsAward({
+      queuePointsAwardNotification({
         userId: user.id,
         type: 'DAILY_POINTS',
         title: 'Daily Banter Points added',
@@ -664,7 +681,7 @@ router.get('/me', jwtAuthMiddleware, async (req: Request, res: Response): Promis
     const earlyUserResult = await prisma.$transaction((tx) => awardEarlyUserPoints(tx, user));
     if (earlyUserResult.awarded) {
       effectiveBanterPointsRaw = effectiveBanterPointsRaw + EARLY_USER_POINTS_RAW;
-      await notifyPointsAward({
+      queuePointsAwardNotification({
         userId: user.id,
         title: 'Welcome bonus added',
         body: 'You received your one-time welcome Banter Points bonus. Open Profile > Banter Points to see how your points count toward the future airdrop.',
