@@ -17,13 +17,12 @@ export const logger = winston.createLogger({
   ],
 });
 
-if (process.env.NODE_ENV !== 'production') {
-  logger.add(
-    new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.simple()
-      ),
-    })
-  );
-}
+// Always emit logs to stdout/stderr so container platforms (Coolify/Docker) can capture them.
+logger.add(
+  new winston.transports.Console({
+    format:
+      process.env.NODE_ENV === 'production'
+        ? logFormat
+        : winston.format.combine(winston.format.colorize(), winston.format.simple()),
+  })
+);
