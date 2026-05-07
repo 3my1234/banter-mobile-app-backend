@@ -3,6 +3,7 @@ import cors from 'cors';
 import helmet from 'helmet';
 import rateLimit from 'express-rate-limit';
 import dotenv from 'dotenv';
+import { randomUUID } from 'crypto';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 import { PrismaClient } from '@prisma/client';
@@ -101,6 +102,29 @@ app.use('/api/auth/privy/verify', authLimiter);
 app.use('/api/auth/register', authLimiter);
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use((req, res, next) => {
+  const start = Date.now();
+  const requestId = randomUUID();
+  const instanceName = process.env.SERVICE_NAME || 'banter-mobile-app-backend';
+
+  res.setHeader('x-request-id', requestId);
+  res.setHeader('x-api-instance', instanceName);
+
+  res.on('finish', () => {
+    logger.info('http_request', {
+      requestId,
+      method: req.method,
+      path: req.originalUrl,
+      status: res.statusCode,
+      durationMs: Date.now() - start,
+      origin: req.headers.origin || null,
+      userAgent: req.headers['user-agent'] || null,
+      ip: req.ip,
+    });
+  });
+
+  next();
+});
 
 // Privy OAuth redirect helper: bounce HTTPS callback to app deep link
 const handlePrivyOAuthRedirect = (req: express.Request, res: express.Response) => {

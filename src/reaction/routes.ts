@@ -133,11 +133,20 @@ router.post('/', async (req: Request, res: Response) => {
         action = 'updated';
       }
     } else {
-      // Create new reaction
-      reaction = await prisma.reaction.create({
-        data: {
+      // Create new reaction (upsert avoids duplicate-write races on rapid taps/retries)
+      reaction = await prisma.reaction.upsert({
+        where: {
+          postId_userId: {
+            postId,
+            userId: user.id,
+          },
+        },
+        create: {
           postId,
           userId: user.id,
+          type,
+        },
+        update: {
           type,
         },
         include: {
