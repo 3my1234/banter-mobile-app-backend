@@ -5,8 +5,19 @@ import { AppError } from '../utils/errorHandler';
 import { addPostExpirationJob } from '../queue/postQueue';
 import { jwtAuthMiddleware } from '../auth/jwtMiddleware';
 import { hardDeletePost } from './service';
+import { HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
 
 const router = Router();
+const s3Client = new S3Client({
+  region: process.env.AWS_REGION || 'us-east-1',
+  credentials: process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY
+    ? {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
+      }
+    : undefined,
+});
+const BUCKET_NAME = process.env.S3_BUCKET_NAME || process.env.AWS_S3_BUCKET_NAME || 'banter-uploads';
 
 type NormalizedMediaItem = {
   url: string;
@@ -65,6 +76,71 @@ function getSerializableMediaItems(
   return normalizeMediaItems(mediaItemsInput, fallbackMediaUrl, fallbackMediaType);
 }
 
+function extractS3KeyFromMediaUrl(url: string): string | null {
+  const raw = String(url || '').trim();
+  if (!raw) return null;
+
+  // Backend proxied paths
+  const backendViewMatch = raw.match(/\/api\/(?:public\/)?images\/view\/(.+)$/i);
+  if (backendViewMatch?.[1]) return decodeURIComponent(backendViewMatch[1]).replace(/^\/+/, '');
+
+  // Direct S3 URL forms
+  const directMatch = raw.match(/^https?:\/\/[^/]+\/(.+)$/i);
+  if (directMatch?.[1]) {
+    const path = decodeURIComponent(directMatch[1]).replace(/^\/+/, '');
+    if (path.startsWith('user-uploads/')) return path;
+  }
+
+  // Raw key
+  if (raw.startsWith('user-uploads/')) return raw;
+  return null;
+}
+
+async function ensureMediaReady(mediaItems: NormalizedMediaItem[]): Promise<void> {
+  if (!mediaItems.length) return;
+
+  const checks = mediaItems.map(async (item) => {
+    const key = extractS3KeyFromMediaUrl(item.url);
+    if (!key) {
+      throw new AppError('Invalid media URL provided', 400);
+    }
+
+    const maxAttempts = 5;
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        const head = await s3Client.send(
+          new HeadObjectCommand({
+            Bucket: BUCKET_NAME,
+            Key: key,
+          })
+        );
+
+        const size = Number(head.ContentLength || 0);
+        if (size <= 0) {
+          throw new Error('Object exists but content length is zero');
+        }
+        return;
+      } catch (error) {
+        lastError = error;
+        if (attempt < maxAttempts) {
+          await new Promise((resolve) => setTimeout(resolve, attempt * 600));
+        }
+      }
+    }
+
+    logger.warn('Media readiness check failed', {
+      key,
+      mediaType: item.type,
+      attempts: maxAttempts,
+      error: (lastError as any)?.message || String(lastError),
+    });
+    throw new AppError('Media upload not ready yet. Please retry in a few seconds.', 409);
+  });
+
+  await Promise.all(checks);
+}
+
 /**
  * POST /api/posts
  * Create a new post
@@ -89,6 +165,7 @@ router.post('/', async (req: Request, res: Response): Promise<Response | void> =
     if (normalizedMediaItems.length > 1 && normalizedMediaItems.some((item) => item.type !== 'image')) {
       throw new AppError('Multiple media uploads currently support images only', 400);
     }
+    await ensureMediaReady(normalizedMediaItems);
 
     const primaryMedia = normalizedMediaItems[0] || null;
     if (mediaUrl && mediaType && !normalizeMediaTypeValue(mediaType)) {
