@@ -146,6 +146,21 @@ router.post('/presign', async (req: Request, res: Response) => {
  * Avoids redirect edge-cases on mobile clients and private buckets.
  * Supports keys with slashes via wildcard route
  */
+const normalizeViewKey = (rawKey: string): string => {
+  return String(rawKey || '')
+    .replace(/^\/+/, '')
+    .replace(/^api\/(?:public\/)?images\/view\/+/i, '')
+    .replace(/^view\/+/i, '')
+    .replace(/^user-uploads[,\/]/, 'user-uploads/')
+    .replace(/,/g, '/');
+};
+
+const isInvalidRangeError = (error: any): boolean => {
+  const message = String(error?.message || '').toLowerCase();
+  const code = String(error?.Code || error?.code || '').toLowerCase();
+  return code === 'invalidrange' || message.includes('requested range is not satisfiable');
+};
+
 const handleViewRequest = async (req: Request, res: Response) => {
   try {
     // Extract key from wildcard param (preferred)
@@ -163,11 +178,8 @@ const handleViewRequest = async (req: Request, res: Response) => {
       // If decode fails, use as-is
     }
 
-    // Normalize key (handle legacy comma-separated keys)
-    const normalizedKey = String(key)
-      .replace(/^\/+/, '')
-      .replace(/^user-uploads[,\/]/, 'user-uploads/')
-      .replace(/,/g, '/');
+    // Normalize key (supports legacy comma-separated keys and accidental /view prefix)
+    const normalizedKey = normalizeViewKey(key);
 
     logger.debug(`Image view request: ${key} -> normalized: ${normalizedKey}`);
 
@@ -205,13 +217,33 @@ const handleViewRequest = async (req: Request, res: Response) => {
     }
 
     const range = req.headers.range;
-    const object = await s3Client.send(
-      new GetObjectCommand({
-        Bucket: BUCKET_NAME,
-        Key: normalizedKey,
-        ...(range ? { Range: range } : {}),
-      })
-    );
+    let object;
+    try {
+      object = await s3Client.send(
+        new GetObjectCommand({
+          Bucket: BUCKET_NAME,
+          Key: normalizedKey,
+          ...(range ? { Range: range } : {}),
+        })
+      );
+    } catch (rangeError: any) {
+      // Some clients request invalid byte ranges; retry full object instead of returning false 404.
+      if (range && isInvalidRangeError(rangeError)) {
+        logger.warn('Invalid range request for media, retrying without Range', {
+          key: normalizedKey,
+          range,
+          userAgent: req.headers['user-agent'],
+        });
+        object = await s3Client.send(
+          new GetObjectCommand({
+            Bucket: BUCKET_NAME,
+            Key: normalizedKey,
+          })
+        );
+      } else {
+        throw rangeError;
+      }
+    }
 
     const body = object.Body as any;
     if (!body || typeof body.pipe !== 'function') {
@@ -235,12 +267,17 @@ const handleViewRequest = async (req: Request, res: Response) => {
     body.pipe(res);
     return;
   } catch (error: any) {
+    const rawKey = (req.params && (req.params as any)[0]) || '';
     logger.error('Image view error', {
       key: req.url,
+      rawKey,
+      normalizedKey: normalizeViewKey(rawKey || req.url || ''),
+      range: req.headers.range,
       error: error?.message || error,
       stack: error?.stack,
     });
-    return res.status(404).json({
+    const status = isInvalidRangeError(error) ? 416 : 404;
+    return res.status(status).json({
       success: false,
       message: 'Image/video not found',
       error: error?.message || 'Unknown error',
